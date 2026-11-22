@@ -13,6 +13,66 @@ func fixture():
 	game.practice_case=0; game.reset(true); game.muted=true; game.enemies.clear(); game.gifts.clear(); game.invincible=0; game.set_physics_process(false)
 func ball(pos,id=0):
 	return game.new_enemy(pos,id,game.SNOW_MAX)
+func test_ride_protection():
+	var dt := 1.0/120.0
+	fixture()
+	var carrier=ball(Vector2(300,492))
+	game.enemies=[carrier]
+	game.player.p=Vector2(280,492)
+	game.kick_ball(carrier,-1)
+	carrier.v.x=-100
+	game.step_game(dt)
+	check(game.player.ride==carrier.id and is_equal_approx(game.invincible,.75),
+		'side contact grants exactly 0.75 seconds of entry protection')
+	for i in 36: game.step_game(dt)
+	check(game.player.ride==carrier.id and is_equal_approx(game.invincible,.45),
+		'riding follows the moving carrier without renewing the entry timer')
+	for i in 60: game.step_game(dt)
+	check(game.player.ride==carrier.id and game.invincible==0.0,
+		'the entry timer expires during a long ride while the player stays carried')
+	game.jump_request=true
+	game.step_game(dt)
+	check(game.player.ride==-1 and is_equal_approx(game.invincible,.5) and game.player.ride_lock>.5,
+		'a late jump-out still grants its own half-second of protection and re-entry lock')
+
+	fixture()
+	carrier=ball(Vector2(300,492))
+	game.enemies=[carrier]; game.player.p=Vector2(420,492)
+	game.kick_ball(carrier,1); carrier.v.x=5000
+	game.step_game(.05)
+	check(game.player.ride==carrier.id and carrier.p.x>500 and is_equal_approx(game.invincible,.75),
+		'a swept pass beyond the endpoint contact radius grants the same entry protection')
+	fixture()
+	carrier=ball(Vector2(300,492))
+	game.enemies=[carrier]; game.player.p=Vector2(420,492)
+	game.invincible=1.4
+	game.kick_ball(carrier,1); carrier.v.x=5000
+	game.step_game(.05)
+	check(game.player.ride==carrier.id and is_equal_approx(game.invincible,1.35),
+		'a swept pickup during existing spawn immunity preserves the longer timer')
+
+	fixture()
+	carrier=ball(Vector2(885,492))
+	game.enemies=[carrier]; game.player.p=Vector2(885,492)
+	game.invincible=.1
+	game.kick_ball(carrier,1)
+	carrier.floor_bounces=1
+	game.step_game(dt)
+	check(game.player.ride==carrier.id and is_equal_approx(game.invincible,.75),
+		'ordinary close contact extends shorter immunity without blocking pickup')
+	for i in 2: game.step_game(dt)
+	check(carrier.dead and game.player.ride==-1 and is_equal_approx(game.invincible,.75-2*dt),
+		'when the carrier breaks at a wall, unused entry protection survives its disappearance')
+	var hazard=game.new_enemy(game.player.p,1)
+	game.enemies.append(hazard)
+	var lives_before:int=game.lives
+	for i in 75: game.step_game(dt)
+	check(game.player.ride==-1 and game.lives==lives_before and game.invincible>0,
+		'overlapping a live enemy after losing the carrier does no damage during remaining entry protection')
+	for i in 18: game.step_game(dt)
+	check(game.lives==lives_before-1 and game.invincible>2,
+		'an enemy at the same spot deals normal damage once the carried-over immunity expires')
+
 func run():
 	await process_frame
 	fixture()
@@ -166,6 +226,7 @@ func run():
 	check(game.player.ride==a.id and game.player.p==a.p, 'fast ball crossing between player samples carries the player to its resolved position')
 	game.jump_request=true; game.step_game(1.0/120)
 	check(game.player.ride==-1 and game.player.v.y<0 and game.player.ride_lock>0, 'jumping out of a swept pickup does not reattach in the same tick')
+	test_ride_protection()
 	for case_id in 4:
 		game.reset(true,case_id)
 		check(game.practice and game.practice_case==case_id and not game.enemies.is_empty(),'practice case %d initializes'%case_id)

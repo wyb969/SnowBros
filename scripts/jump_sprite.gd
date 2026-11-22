@@ -1,6 +1,10 @@
 extends RefCounted
 ## Every cel in the actor atlas uses the same foot and turn pivot.
 const TEXTURE = preload("res://assets/snowbro.png")
+const SPEED_TEXTURE = preload("res://assets/snowbro_speed.png")
+const SPEED_PHASES = 4
+const SPEED_COLUMNS = 16
+const SPEED_FRAMES_PER_SECOND = 24.0
 const CELL_SIZE = 40
 const COLUMNS = 8
 const FEET = Vector2(20, 34)
@@ -17,6 +21,14 @@ const TURN_FRAMES = 24
 static func region(frame: int) -> Rect2:
 	@warning_ignore("integer_division")
 	return Rect2((frame % COLUMNS) * CELL_SIZE, (frame / COLUMNS) * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+
+static func speed_region(frame: int, elapsed: float) -> Rect2:
+	# The upper-body cel stays locked to the action. The boots cycle on the
+	# simulation clock even with zero displacement, and stop while paused.
+	var phase := floori(elapsed * SPEED_FRAMES_PER_SECOND) % SPEED_PHASES
+	var cel := frame * SPEED_PHASES + phase
+	@warning_ignore("integer_division")
+	return Rect2((cel % SPEED_COLUMNS) * CELL_SIZE, (cel / SPEED_COLUMNS) * CELL_SIZE, CELL_SIZE, CELL_SIZE)
 
 static func turn_frame(angle: float, aim: int = 0) -> int:
 	var first := Frame.TURN

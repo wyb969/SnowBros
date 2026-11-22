@@ -63,7 +63,7 @@ func run():
 	check(a.p==Vector2(300,492) and b.p==Vector2(315,492),'idle full snowballs can remain overlapped without separation')
 	fixture();a=ball(Vector2(300,492),0);b=ball(Vector2(400,492),1);game.enemies=[a,b];game.player.p=Vector2(262,492);game.web_axis=1
 	for i in 210:game.step_game(DT)
-	check(absf(a.p.x-b.p.x)<2 and b.p.x>410,'walking can push one snowball into another and then move the overlapped stack')
+	check(absf(b.p.x-a.p.x-game.STACK_DISTANCE)<.02 and b.p.x>410,'walking moves the tight pair together with a visible rim on each ball')
 	check(not a.roll and not b.roll and game.score==0,'overlap pushing never becomes an attack or credits a kick')
 	check(game.player.p.x<minf(a.p.x,b.p.x)-36,'player remains outside the pushed snowballs')
 	fixture()
@@ -72,12 +72,12 @@ func run():
 	for i in 150:game.step_game(DT)
 	var leftmost: float=game.enemies.map(func(e):return e.p.x).min()
 	var rightmost: float=game.enemies.map(func(e):return e.p.x).max()
-	check(rightmost-leftmost<2 and leftmost>370,'three balls also merge while pushing in reversed entity order')
+	check(absf(rightmost-leftmost-2*game.STACK_DISTANCE)<.02 and leftmost>370,'three balls keep distinct positions while pushing in reversed entity order')
 	fixture()
 	for i in 3:game.enemies.append(ball(Vector2(895+i*7,492),i))
 	game.player.p=Vector2(857,492);game.web_axis=1
 	for i in 120:game.step_game(DT)
-	check(game.enemies.all(func(e):return e.p.x<=910 and e.p.x>=908 and not e.roll),'overlapped push remains bounded at a wall')
+	check(game.enemies.all(func(e):return absf(e.p.x-(910-(2-e.id)*game.STACK_DISTANCE))<.02 and not e.roll),'the whole stack stops against the wall with every rim visible')
 	fixture();a=ball(Vector2(300,492));game.enemies=[a];game.player.p=Vector2(262,492);game.web_axis=1
 	for i in 120:game.step_game(DT)
 	var normal_push: float=a.p.x-300
@@ -89,7 +89,43 @@ func run():
 	game.player.p=Vector2(262,492);game.attack();a=game.enemies[0]
 	check(game.enemies.all(func(e):return e.roll and e.chain_id==a.chain_id) and game.score==1500,'kicking an overlapped stack releases all members in one scoring chain')
 	for i in 20:game.step_game(DT)
-	check(game.enemies.all(func(e):return e.p.y==492 and e.v.x>570) and absf(game.enemies[2].p.x-a.p.x)<2,'released stack stays overlapped and does not bounce against itself')
+	check(game.enemies.all(func(e):return e.p.y==492 and e.v.x>570) and absf(game.enemies[2].p.x-a.p.x-2*game.STACK_DISTANCE)<.02,'released stack retains its spacing without bouncing against itself')
+	for direction in [-1,1]:
+		var paths = []
+		for reverse_order in [false,true]:
+			fixture(); a=ball(Vector2(480,492),3); b=ball(Vector2(480,492),8)
+			game.enemies=[b,a] if reverse_order else [a,b]
+			game.step_game(DT)
+			check(is_equal_approx(b.p.x-a.p.x,game.STACK_DISTANCE), 'coincident resting balls get a real, stable footprint')
+			var seed=a if direction>0 else b
+			game.player.p=seed.p-Vector2(direction*38,0)
+			game.web_axis=direction
+			var uniform=true
+			for frame in 90:
+				var old:float=seed.p.x
+				game.step_game(DT)
+				if absf(seed.p.x-old-direction*game.PUSH_SPEED*DT)>.003 or absf(b.p.x-a.p.x-game.STACK_DISTANCE)>.003: uniform=false
+			check(uniform and game.player.pushing and a.stack_tone==0 and b.stack_tone==1, 'either side moves both balls once per tick; white and blue identities stay fixed')
+			var end_position:Vector2=seed.p
+			game.web_axis=0
+			for frame in 45: game.step_game(DT)
+			check(seed.p==end_position and a.stack_tone==0 and b.stack_tone==1, 'releasing the group keeps its spacing and its color while resting')
+			paths.append(seed.p)
+			game.player.dir=direction
+			game.attack()
+			check(a.roll and b.roll and a.chain_id==b.chain_id and a.stack_tone==0 and b.stack_tone==0 and signf(a.v.x)==direction, 'kicking from either side releases both balls on one chain and clears their tints')
+		check(paths[0]==paths[1], 'reversing entity storage does not change the group path')
+	fixture(); a=ball(Vector2(54,492),0); b=ball(Vector2(54,492),1)
+	game.enemies=[b,a]; game.step_game(DT); game.player.p=b.p+Vector2(38,0); game.web_axis=-1
+	for frame in 100: game.step_game(DT)
+	check(a.p.x==50 and b.p.x==50+game.STACK_DISTANCE and game.player.p.x==b.p.x+38, 'the left wall also preserves both centers and the player contact point')
+	check(game.player.pushing and a.stack_tone==0 and b.stack_tone==2, 'an odd-ID partner yields a white and rose-red pair during repeated leftward pushing')
+	fixture(); a=ball(Vector2(410,492),0); b=game.new_enemy(Vector2(410,492),1,game.SNOW_MAX-1)
+	game.enemies=[b,a]; game.snow_hit(b,{'p':b.p,'power':1})
+	check(b.p.x-a.p.x==game.STACK_DISTANCE, 'a newly completed ball cannot cover an already frozen ball for a frame')
+	b.ground=false; b.v.y=-245
+	game.step_game(DT)
+	check(a.stack_tone==0 and b.stack_tone==0, 'a ball bumped out of a group immediately regains normal snow color')
 	fixture();a=ball(Vector2(300,388),0);b=ball(Vector2(347,396),1);game.kick_ball(a,1)
 	var pa: Vector2=a.p;var pb: Vector2=b.p
 	game.collide_balls(a,b)

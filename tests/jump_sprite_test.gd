@@ -58,5 +58,33 @@ func _initialize():
 	for frame in [Sprite.Frame.IDLE, Sprite.Frame.LAND, Sprite.Frame.LAND_LOW, Sprite.Frame.KICK_OUT]:
 		var box := sheet.get_region(Rect2i(Sprite.region(frame))).get_used_rect()
 		check(box.end.y == int(Sprite.FEET.y), "At least one boot remains planted.")
+	check_speed_boots(sheet)
 	print("%d sprite checks, %d failed" % [checks, failures])
 	quit(1 if failures else 0)
+
+func check_speed_boots(normal: Image):
+	var sheet := Image.new()
+	check(sheet.load_png_from_buffer(FileAccess.get_file_as_bytes("res://assets/snowbro_speed.png")) == OK, "Red-potion sprite atlas decodes.")
+	var actor := {"attack": 0.0, "ground": true, "v": Vector2.ZERO, "pushing": false}
+	var idle := Sprite.ground_frame(actor, 0, 0, 0, 0)
+	for frame in range(Sprite.Frame.TURN_THROW_REVERSE + Sprite.TURN_FRAMES):
+		var phases := {}
+		var valid_bounds := true
+		var upper_matches := true
+		var foot_planted := true
+		var original := normal.get_region(Rect2i(Sprite.region(frame)))
+		for i in Sprite.SPEED_PHASES:
+			var sample_time := (i + 0.5) / Sprite.SPEED_FRAMES_PER_SECOND
+			var cell := Rect2i(Sprite.speed_region(frame, sample_time))
+			valid_bounds = valid_bounds and Rect2i(Vector2i.ZERO, sheet.get_size()).intersection(cell) == cell
+			var sample := sheet.get_region(cell)
+			phases[hash(sample.get_data())] = true
+			if frame < Sprite.Frame.FALL:
+				upper_matches = upper_matches and sample.get_region(Rect2i(0, 0, 40, 21)).get_data() == original.get_region(Rect2i(0, 0, 40, 21)).get_data()
+				foot_planted = foot_planted and sample.get_used_rect().end.y == int(Sprite.FEET.y)
+		check(valid_bounds and phases.size() == Sprite.SPEED_PHASES, "Four leg poses stay distinct for action cel %d." % frame)
+		if frame < Sprite.Frame.FALL:
+			check(upper_matches and foot_planted, "Speed preserves the grounded action and sole contact for cel %d." % frame)
+	var cycle: float = Sprite.SPEED_PHASES / Sprite.SPEED_FRAMES_PER_SECOND
+	check(idle == Sprite.ground_frame(actor, 0, cycle * 0.5, 0, 0) and Sprite.speed_region(idle, 0) != Sprite.speed_region(idle, cycle * 0.5), "A stationary red-potion player cycles boots independently of an unchanged idle cel.")
+	check(Sprite.speed_region(idle, 0) == Sprite.speed_region(idle, cycle), "The fast gait loops at its configured cadence.")

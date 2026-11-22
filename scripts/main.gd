@@ -11,12 +11,13 @@ const PLAYER_MOVE_SPEED = LOGIC_WIDTH*.22
 const PLAYER_RED_SPEED = PLAYER_MOVE_SPEED*1.3
 const SNOW_MAX = 6
 const BALL_RADIUS = 24.0
+const RIDE_ENTRY_INVINCIBILITY = .75
 const PUSH_SPEED = 68.0
 const RED_PUSH_SPEED = 110.0
 const ROLL_SPEED = LOGIC_WIDTH*1.27
 const ROLL_DROP_SPEED = 620.0
 const BALL_FOOT_MARGIN = 12.0
-const STACK_DISTANCE = 12.0
+const STACK_DISTANCE = 14.0
 const BALL_FRICTION = 2.0
 const BALL_WALL_RESTITUTION = 0.97
 const BALL_ENEMY_RETENTION = 0.995
@@ -42,11 +43,8 @@ const PLAYER_FALL_GRAVITY = 2.0*PLAYER_JUMP_HEIGHT/(PLAYER_FALL_TIME*PLAYER_FALL
 const PLAYER_JUMP_BUFFER = 5.0/60.0
 const PLAYER_LEDGE_GRACE = 3.0/60.0
 const PLAYER_LANDING_POSE = .085
-# The feet of a tucked somersault and the tips of the enemy horns each need
-# different clearance above the HUD's playfield border.
+# Monster horns and tumbling enemies each need room above the playfield.
 const ROOM_TOP = 96.0
-const PLAYER_TURN_CEILING = ROOM_TOP + 42.0
-const PLAYER_STANDING_CEILING = ROOM_TOP + 62.0
 const ENEMY_CEILING = ROOM_TOP + 48.0
 const DEFEATED_CEILING = ROOM_TOP + 56.0
 var platforms: Array[Rect2] = [Rect2(36,492,888,28),Rect2(36,388,240,20),Rect2(360,388,240,20),Rect2(684,388,240,20),Rect2(105,280,280,20),Rect2(575,280,280,20),Rect2(36,172,240,20),Rect2(360,172,240,20),Rect2(684,172,240,20)]
@@ -65,13 +63,12 @@ var practice_case = 0
 var jump_active = false
 var jump_angle = 0.0
 var jump_spin_dir = 1
-var jump_launch_speed = PLAYER_JUMP_SPEED
-var jump_rise_gravity = PLAYER_GRAVITY
 var jump_buffer = 0.0
 var ledge_grace = 0.0
 var landing_pose = 0.0
 var landing_strength = 0.0
 var stride_distance = 0.0
+var stage_scroll_y := 0.0
 var score = 0
 var high_score = 40000
 var lives = 3
@@ -162,7 +159,7 @@ func sync_web_state(dt):
 	web_shell.update(JSON.stringify({"state":state,"paused":paused,"practice":practice,"case":practice_case,"score":score,"lives":lives}))
 
 func new_enemy(pos, id, snow=0):
-	return {"id":id,"p":pos,"v":Vector2.ZERO,"dir":1 if id%2==0 else -1,"ground":true,"snow":snow,"roll":false,"thaw":12.0,"jump":2.0+id*0.4,"chain":0,"spin":0.0,"impact":0.0,"flash":0.0,"bounces":0,"floor_bounces":0,"travel":[],"credited":false,"dead":false,"chain_id":0,"previous":pos}
+	return {"id":id,"p":pos,"v":Vector2.ZERO,"dir":1 if id%2==0 else -1,"ground":true,"snow":snow,"roll":false,"thaw":12.0,"jump":2.0+id*0.4,"chain":0,"spin":0.0,"impact":0.0,"flash":0.0,"bounces":0,"floor_bounces":0,"stack_tone":0,"travel":[],"credited":false,"dead":false,"chain_id":0,"previous":pos}
 
 func reset(training=false, case_index=-1):
 	if case_index>=0: practice_case=case_index%4
@@ -185,7 +182,9 @@ func reset(training=false, case_index=-1):
 				for i in 4: enemies.append(new_enemy(Vector2(420+i*110,492),i+1,i%3))
 			2:
 				player.p=Vector2(410,172)
-				for i in 3: enemies.append(new_enemy(Vector2(465+i*18,172),i,SNOW_MAX))
+				var ball_x := [465, 500, 566]
+				for i in ball_x.size():
+					enemies.append(new_enemy(Vector2(ball_x[i],172),i,SNOW_MAX))
 				gifts.append({"p":Vector2(365,172),"life":999.0,"kind":"red"})
 			3:
 				player.p=Vector2(180,492)
@@ -198,8 +197,9 @@ func reset(training=false, case_index=-1):
 		for i in spawns.size(): enemies.append(new_enemy(spawns[i],i))
 	score=0; lives=3; invincible=1.5; elapsed=0; paused=false; state="play"
 	speed_up=false; power_up=false; range_up=false; combo=0; notice_time=0; hit_flash=0
-	position=Vector2.ZERO
-	if practice: announce(["1: PUSH / STAND / BUMP / KICK","2: ONE BALL / FOUR TARGETS","3: OVERLAP / RED PUSH / LOWER FLOORS","4: SNOW ARC / BLUE SIZE / YELLOW LENGTH"][practice_case],4.0)
+	stage_scroll_y = 0.0
+	position = Vector2.ZERO
+	if practice: announce(["1: PUSH / STAND / BUMP / KICK","2: ONE BALL / FOUR TARGETS","3: RED POTION / PUSH TWO / TOP JUMP","4: SNOW ARC / BLUE SIZE / YELLOW LENGTH"][practice_case],4.0)
 
 func announce(message, duration=1.6):
 	notice=message; notice_time=duration
@@ -267,7 +267,7 @@ func credit_ball(e):
 
 func kick_ball(e, direction, chain_id=0):
 	var vertical: float=e.v.y if not e.ground else 0.0
-	e.roll=true; e.dir=direction; e.v=Vector2(direction*ROLL_SPEED,vertical)
+	e.roll=true; e.stack_tone=0; e.dir=direction; e.v=Vector2(direction*ROLL_SPEED,vertical)
 	e.impact=0.65; e.impact_side=false; e.thaw=12; credit_ball(e)
 	if chain_id==0:
 		e.chain_id=next_chain; chains[next_chain]=0; next_chain+=1
@@ -275,13 +275,90 @@ func kick_ball(e, direction, chain_id=0):
 	play_sfx("kick")
 	burst(e.p-Vector2(0,22),ICE,8)
 
+func ball_before(a, b):
+	if a.p.x == b.p.x: return a.id < b.id
+	return a.p.x < b.p.x
+
+func idle_ball_row(seed):
+	if not seed.ground: return [seed]
+	var row = []
+	for ball in enemies:
+		if not ball.dead and not ball.roll and ball.snow >= SNOW_MAX and ball.ground and is_equal_approx(ball.p.y, seed.p.y):
+			row.append(ball)
+	row.sort_custom(ball_before)
+	return row
+
+func tint_ball_row(row):
+	var index := 0
+	for i in row.size():
+		if i == 0 or row[i].p.x - row[i-1].p.x > STACK_DISTANCE + .01:
+			index = 0
+		match index % 3:
+			0: row[i].stack_tone = 0
+			1: row[i].stack_tone = 1 if posmod(int(row[i].id), 2) == 0 else 2
+			2: row[i].stack_tone = 3 - int(row[i-1].stack_tone)
+		index += 1
+
+func space_ball_row(row):
+	# The wall constrains the whole row. A second pass only acts when the
+	# forward pass would put the rightmost center outside the arena.
+	var left_limit := 50.0
+	for ball in row:
+		ball.p.x = maxf(ball.p.x, left_limit)
+		left_limit = ball.p.x + STACK_DISTANCE
+	if not row.is_empty() and row.back().p.x > 910.0:
+		var right_limit := 910.0
+		for i in range(row.size()-1,-1,-1):
+			row[i].p.x = minf(row[i].p.x, right_limit)
+			right_limit = row[i].p.x - STACK_DISTANCE
+	tint_ball_row(row)
+
+func settle_idle_balls(balls):
+	var rows = {}
+	for ball in balls:
+		ball.stack_tone = 0
+		if ball.dead or ball.roll or not ball.ground: continue
+		if not rows.has(ball.p.y): rows[ball.p.y] = []
+		rows[ball.p.y].append(ball)
+	for row in rows.values():
+		if row.size() < 2: continue
+		row.sort_custom(ball_before)
+		space_ball_row(row)
+
+func push_ball_group(seed, push_distance):
+	var row = idle_ball_row(seed)
+	space_ball_row(row)
+	var direction := signf(push_distance)
+	if direction < 0.0: row.reverse()
+	var start: int = row.find(seed)
+	var wall := 910.0 if direction > 0.0 else -50.0
+	# Each ball ahead needs one visible rim's worth of space at the wall.
+	var proposed := minf(seed.p.x * direction + absf(push_distance), wall - (row.size()-1-start) * STACK_DISTANCE)
+	for i in range(start, row.size()):
+		var ball = row[i]
+		var old_x: float = ball.p.x
+		if old_x * direction > proposed + .01: break
+		ball.p.x = maxf(old_x * direction, proposed) * direction
+		ball.spin += (ball.p.x-old_x) / BALL_RADIUS
+		ball.thaw = 12.0
+		proposed = ball.p.x * direction + STACK_DISTANCE
+	if direction < 0.0: row.reverse()
+	tint_ball_row(row)
+
 func kick_stack(seed,direction):
 	player.ride_lock = maxf(player.ride_lock, .12)
+	var row = idle_ball_row(seed)
+	space_ball_row(row)
+	var start: int = row.find(seed)
+	var first := start
+	var last := start
+	while first > 0 and row[first].p.x - row[first-1].p.x <= STACK_DISTANCE + .01:
+		first -= 1
+	while last+1 < row.size() and row[last+1].p.x - row[last].p.x <= STACK_DISTANCE + .01:
+		last += 1
 	kick_ball(seed,direction)
-	for e in enemies:
-		if e==seed or e.dead or e.roll or e.snow<SNOW_MAX: continue
-		if e.p.distance_to(seed.p)<=STACK_DISTANCE:
-			kick_ball(e,direction,seed.chain_id)
+	for i in range(first,last+1):
+		if i != start: kick_ball(row[i],direction,seed.chain_id)
 
 func ball_impact(e, strength, contact_normal = Vector2.ZERO):
 	e.impact = clampf(strength, .2, 1.0)
@@ -484,7 +561,7 @@ func respond_to_pair(a, b, normal):
 	float_text.append({"text":"CHAIN","p":(a.p+b.p)*.5-Vector2(0,55),"life":.8,"color":ICE})
 
 func catch_passing_ball(balls, player_start):
-	if player.ride >= 0 or player.ride_lock > 0.0 or invincible > 0.0 or player.standing >= 0: return
+	if player.ride >= 0 or player.ride_lock > 0.0 or player.standing >= 0: return
 	var earliest := INF
 	var carrier = null
 	for ball in balls:
@@ -513,7 +590,9 @@ func snow_hit(e,shot):
 	# Ordinary snow arrests walking. It never launches a living target.
 	# A target already airborne still follows gravity, without added impulse.
 	e.v.x=0.0
-	if e.snow==SNOW_MAX: play_sfx("freeze")
+	if e.snow==SNOW_MAX:
+		play_sfx("freeze")
+		space_ball_row(idle_ball_row(e))
 
 func roll_hit(ball,target):
 	if target.dead: return
@@ -563,6 +642,10 @@ func find_ball(id):
 	return null
 
 func begin_ride(carrier):
+	if player.ride >= 0: return
+	# Covers the transition even if the carrier breaks on the next wall.
+	# Contact protection while already riding is independent of this timer.
+	invincible=maxf(invincible,RIDE_ENTRY_INVINCIBILITY)
 	player.ride=carrier.id
 	player.p=carrier.p
 	player.v=carrier.v
@@ -576,15 +659,7 @@ func room_launch_speed(feet_y: float, ceiling: float, gravity: float, maximum: f
 	return minf(maximum, sqrt(2.0*gravity*maxf(feet_y-ceiling,0.0)))
 
 func begin_jump():
-	var height: float=clampf(player.p.y-PLAYER_TURN_CEILING,0.0,PLAYER_JUMP_HEIGHT)
-	jump_buffer=0.0
-	if height<.01: return
-	# Keep the calibrated cadence where there is headroom. A low ceiling
-	# shortens the whole arc, including the turn, instead of stopping it midair.
-	var rise_time := minf(PLAYER_APEX_TIME,sqrt(2.0*height/(PLAYER_GRAVITY*.50)))
-	jump_launch_speed=2.0*height/rise_time
-	jump_rise_gravity=jump_launch_speed/rise_time
-	player.v.y=-jump_launch_speed; player.ground=false
+	player.v.y=-PLAYER_JUMP_SPEED; player.ground=false
 	jump_active=true; jump_angle=0.0; jump_spin_dir=player.dir
 	jump_buffer=0.0; ledge_grace=0.0; landing_pose=0.0
 	play_sfx("jump")
@@ -610,9 +685,9 @@ func move_player_body(dt: float) -> float:
 	player.ground=false
 
 	# Split the tick at its apex so trajectories agree at any substep rate.
-	var rising_time := clampf(-player.v.y/jump_rise_gravity,0.0,dt)
-	player.p.y+=player.v.y*rising_time+.5*jump_rise_gravity*rising_time*rising_time
-	player.v.y+=jump_rise_gravity*rising_time
+	var rising_time := clampf(-player.v.y/PLAYER_GRAVITY,0.0,dt)
+	player.p.y+=player.v.y*rising_time+.5*PLAYER_GRAVITY*rising_time*rising_time
+	player.v.y+=PLAYER_GRAVITY*rising_time
 	var falling_time := dt-rising_time
 	if falling_time<=0.0: return 0.0
 
@@ -647,7 +722,7 @@ func jump_landing_time():
 		var x: float=clampf(player.p.x+player.v.x*t,52,908)
 		if t>=0 and x>plat.position.x-9 and x<plat.end.x+9: remaining=minf(remaining,t)
 	for e in enemies:
-		if e.dead or e.snow<SNOW_MAX or e.p.y-46.0<PLAYER_STANDING_CEILING: continue
+		if e.dead or e.snow<SNOW_MAX: continue
 		var t: float=descent_time(e.p.y-46.0)
 		if t>=0 and absf(player.p.x+player.v.x*t-(e.p.x+e.v.x*t))<32: remaining=minf(remaining,t)
 	return remaining
@@ -658,7 +733,7 @@ func update_jump_pose(dt):
 		jump_angle=TAU; jump_active=false; return
 	if player.v.y<0:
 		# First half-turn on ascent, reaching upside down at the apex.
-		jump_angle=maxf(jump_angle,PI*clampf(1.0+player.v.y/jump_launch_speed,0,1))
+		jump_angle=maxf(jump_angle,PI*clampf(1.0+player.v.y/PLAYER_JUMP_SPEED,0,1))
 	else:
 		var descending_step := minf(dt,player.v.y/PLAYER_FALL_GRAVITY)
 		if descending_step<dt: jump_angle=maxf(jump_angle,PI)
@@ -680,7 +755,7 @@ func update_player(dt,axis):
 		if carrier==null or not carrier.roll:
 			player.ride=-1; player.ride_lock=.4; player.ground=false; player.v=Vector2.ZERO
 		elif jump_buffer>0.0:
-			player.p=Vector2(carrier.p.x,maxf(carrier.p.y-48.0,PLAYER_STANDING_CEILING)); player.v=Vector2(carrier.v.x*.4,0)
+			player.p=carrier.p-Vector2(0,48); player.v=Vector2(carrier.v.x*.4,0)
 			player.momentum=carrier.v.x*.4; player.ride=-1; player.ride_lock=.6; invincible=maxf(invincible,.5)
 			begin_jump()
 		else:
@@ -693,11 +768,13 @@ func update_player(dt,axis):
 	var was_grounded: bool=player.ground
 	var impact_speed := move_player_body(dt)
 	player.standing=-1
+	var contact_ball = null
+	var closest_side := INF
 	for e in enemies:
 		if e.snow<SNOW_MAX or e.dead: continue
 		var top: float=e.p.y-46.0
 		var side_distance=absf(player.p.x-e.p.x)
-		if top>=PLAYER_STANDING_CEILING and player.v.y>=0 and previous.y<=top+3 and player.p.y>=top and side_distance<32:
+		if player.v.y>=0 and previous.y<=top+3 and player.p.y>=top and side_distance<32:
 			player.p.y=top; player.v.y=0; player.ground=true; player.standing=e.id
 			player.p.x+=e.v.x*dt
 			continue
@@ -708,15 +785,22 @@ func update_player(dt,axis):
 			continue
 		if player.p.y<=top+4 or player.p.y-44>=e.p.y-2: continue
 		if side_distance<38:
-			if e.roll and player.ride_lock<=0 and invincible<=0:
+			if e.roll and player.ride_lock<=0:
 				begin_ride(e); return
 			var side=-1 if previous.x<e.p.x else 1
-			if not e.roll and axis*side<-.1:
-				var push: float=axis*(RED_PUSH_SPEED if speed_up else PUSH_SPEED)*dt
-				var old_x: float=e.p.x
-				e.p.x=clampf(e.p.x+push,50,910); e.spin+=(e.p.x-old_x)/BALL_RADIUS; e.thaw=12
-				player.pushing=true
-			player.p.x=e.p.x+side*38.0
+			if e.roll:
+				player.p.x=e.p.x+side*38.0
+			else:
+				var distance := absf(previous.x-e.p.x)
+				if distance < closest_side or (distance == closest_side and (contact_ball == null or e.id < contact_ball.id)):
+					contact_ball = e
+					closest_side = distance
+	if contact_ball != null and player.standing < 0:
+		var side := -1 if previous.x < contact_ball.p.x else 1
+		if axis * side < -.1:
+			push_ball_group(contact_ball, axis * (RED_PUSH_SPEED if speed_up else PUSH_SPEED) * dt)
+			player.pushing = true
+		player.p.x = contact_ball.p.x + side * 38.0
 	update_jump_pose(dt)
 	if player.ground:
 		ledge_grace=0.0
@@ -900,7 +984,7 @@ func _physics_process(dt):
 
 func step_game(dt):
 	if state!="play": return
-	elapsed+=dt; cooldown-=dt; combo_time=maxf(0.0,combo_time-dt); invincible-=dt; notice_time-=dt; hit_flash=maxf(0.0,hit_flash-dt)
+	elapsed+=dt; cooldown-=dt; combo_time=maxf(0.0,combo_time-dt); invincible=maxf(0.0,invincible-dt); notice_time-=dt; hit_flash=maxf(0.0,hit_flash-dt)
 	var axis=clampf(float(key(KEY_RIGHT) or key(KEY_D) or touch_right)-float(key(KEY_LEFT) or key(KEY_A) or touch_left)+web_axis,-1.0,1.0)
 	var balls = []
 	var targets = []
@@ -924,6 +1008,7 @@ func step_game(dt):
 			e.dir = 1 if player.p.x > e.p.x else -1
 		move_body(e, dt)
 	advance_snowballs(balls, targets, dt)
+	settle_idle_balls(balls)
 	var player_start: Vector2 = player.p
 	update_player(dt,axis)
 	catch_passing_ball(balls, player_start)
@@ -956,6 +1041,20 @@ func step_game(dt):
 	for f in float_text: f.life-=dt; f.p.y-=32*dt
 	float_text=float_text.filter(func(f): return f.life>0)
 	if enemies.is_empty() and gifts.is_empty() and defeated.is_empty() and not practice: state="clear"; award(lives*1000,Vector2(480,260))
+	update_stage_view(dt)
+
+func update_stage_view(dt: float):
+	# Follow only above the upper floors. The space between the thresholds lets
+	# the actor visibly descend before the camera begins to track down again.
+	var feet_y: float = player.p.y
+	var upper_limit := maxf(0.0, 166.0 - feet_y)
+	var lower_limit := maxf(0.0, 250.0 - feet_y)
+	stage_scroll_y = maxf(stage_scroll_y, upper_limit)
+	if stage_scroll_y > lower_limit:
+		stage_scroll_y = move_toward(stage_scroll_y, lower_limit, 650.0 * dt)
+	# A long fall or a respawn must immediately bring the feet back into view.
+	stage_scroll_y = minf(stage_scroll_y, maxf(0.0, 494.0 - feet_y))
+	position.y = roundf(stage_scroll_y)
 
 func label_at(text,pos,size,color=WHITE):
 	draw_string(FONT,pos,text,HORIZONTAL_ALIGNMENT_LEFT,-1,size,color)
@@ -1013,7 +1112,9 @@ func draw_player():
 	var tint := Color.WHITE
 	if invincible > 0.0 and int(clock * 10.0) % 2 == 1:
 		tint = Color(.75, .92, 1.0, .55)
-	draw_texture_rect_region(ACTOR_SPRITE.TEXTURE, Rect2(-pivot, Vector2.ONE * ACTOR_SPRITE.CELL_SIZE), ACTOR_SPRITE.region(frame), tint)
+	var sheet := ACTOR_SPRITE.SPEED_TEXTURE if speed_up else ACTOR_SPRITE.TEXTURE
+	var region := ACTOR_SPRITE.speed_region(frame, elapsed) if speed_up else ACTOR_SPRITE.region(frame)
+	draw_texture_rect_region(sheet, Rect2(-pivot, Vector2.ONE * ACTOR_SPRITE.CELL_SIZE), region, tint)
 	draw_set_transform(Vector2.ZERO)
 
 func draw_ellipse_shadow(feet: Vector2):
@@ -1041,10 +1142,18 @@ func monster(e):
 		if e.get("impact_side", false): squash = -squash
 		var scale_factor := Vector2(1.0 + squash * .17, 1.0 - squash * .14)
 		draw_set_transform(p - Vector2(0, BALL_RADIUS * scale_factor.y), 0, scale_factor)
+		var tone: int = e.get("stack_tone", 0) if not e.roll else 0
+		var rim := Color("80c4de")
+		var body := Color("caedf3")
+		var light := WHITE
+		if tone == 1:
+			rim = Color("4383bc"); body = Color("7dbde9"); light = Color("a6d9ff")
+		elif tone == 2:
+			rim = Color("bc7686"); body = Color("e7a3af"); light = Color("ffc9d1")
 		draw_circle(Vector2.ZERO, BALL_RADIUS, Color("305776"))
-		draw_circle(Vector2(0,-1), 22.5, Color("80c4de"))
-		draw_circle(Vector2(-1,-3), 20.5, Color("caedf3"))
-		draw_circle(Vector2(-2,-4), 18.5, WHITE)
+		draw_circle(Vector2(0,-1), 22.5, rim)
+		draw_circle(Vector2(-1,-3), 20.5, body)
+		draw_circle(Vector2(-2,-4), 18.5, light)
 		var angle: float = e.get("spin", 0.0)
 		draw_arc(Vector2.ZERO, 14.0, angle, angle + 1.3, 7, Color("98cfdd"), 3)
 		draw_arc(Vector2.ZERO, 16.0, angle + 2.8, angle + 3.65, 6, Color("aad9e5"), 2)
@@ -1075,26 +1184,15 @@ func monster(e):
 		draw_texture_rect_region(MONSTER_POSES, dest, Rect2(e.snow * 32, 4 * 28, 32, 28))
 
 func _draw():
+	draw_set_transform(-position)
 	draw_rect(Rect2(0,0,960,640),Color("071729"))
 	for i in 70:
 		var x=fmod(i*137.3,960); var y=fmod(i*67.1+clock*(8+i%4*4),520)
 		draw_circle(Vector2(x,y),1+i%2,Color(.7,.9,1,.15))
 	for i in 9:
 		var x=i*125-40
-		draw_colored_polygon(PackedVector2Array([Vector2(x,490),Vector2(x+90,130+i%3*44),Vector2(x+180,490)]),Color("102d43"))
-	label_at("1UP",Vector2(38,32),12,Color("71d7e9")); label_at("%07d"%score,Vector2(38,56),20)
-	label_at("SNOW / BRO",Vector2(337,37),23)
-	label_at("CASE %d/4 [Q]"%(practice_case+1) if practice else "FLOOR 01 [T]",Vector2(378,60),11,Color("80b9cc"))
-	label_at("LIVES",Vector2(768,29),11,Color("71d7e9"))
-	for i in lives: draw_circle(Vector2(776+i*30,48),8,WHITE)
-	label_at("%02d LEFT"%enemies.filter(func(e): return not e.roll).size(),Vector2(768,78),10,Color("ffc56c"))
-	label_at("HI %07d"%high_score,Vector2(38,78),9,Color("80b9cc"))
-	var flags=[speed_up,power_up,range_up]
-	for i in 3:
-		var col=[Color("ef7287"),Color("6cb9ff"),Color("ffd26f")][i]
-		draw_rect(Rect2(339+i*98,72,90,14),col if flags[i] else Color("19384d"))
-		label_at(["SPEED","BIG SNOW","LONG SNOW"][i],Vector2(350+i*98,82),8,Color("071729") if flags[i] else Color("62869b"))
-	draw_rect(Rect2(24,96,912,426),Color("2c5368"),false,3)
+		draw_colored_polygon(PackedVector2Array([Vector2(x,490),Vector2(x+90,130+i%3*44+roundf(stage_scroll_y*.25)),Vector2(x+180,490)]),Color("102d43"))
+	draw_set_transform(Vector2.ZERO)
 	for plat in platforms:
 		draw_rect(plat,Color("245e7c")); draw_rect(Rect2(plat.position+Vector2(0,5),Vector2(plat.size.x,5)),Color("397f9c"))
 		draw_rect(Rect2(plat.position-Vector2(0,3),Vector2(plat.size.x,7)),ICE)
@@ -1118,11 +1216,29 @@ func _draw():
 		draw_snow_shot(s)
 	for p in particles: draw_rect(Rect2(p.p,Vector2(4,4)),p.color)
 	for f in float_text: label_at(f.text,f.p,12,Color(f.color,clampf(f.life*2,0,1)))
+	# Root position follows the actor. Score, buttons and playfield trim use viewport coordinates.
+	draw_set_transform(-position)
+	draw_rect(Rect2(0,0,960,94),Color("071729"))
+	draw_rect(Rect2(0,523,960,117),Color("071729"))
+	label_at("1UP",Vector2(38,32),12,Color("71d7e9")); label_at("%07d"%score,Vector2(38,56),20)
+	label_at("SNOW / BRO",Vector2(337,37),23)
+	label_at("CASE %d/4 [Q]"%(practice_case+1) if practice else "FLOOR 01 [T]",Vector2(378,60),11,Color("80b9cc"))
+	label_at("LIVES",Vector2(768,29),11,Color("71d7e9"))
+	for i in lives: draw_circle(Vector2(776+i*30,48),8,WHITE)
+	label_at("%02d LEFT"%enemies.filter(func(e): return not e.roll).size(),Vector2(768,78),10,Color("ffc56c"))
+	label_at("HI %07d"%high_score,Vector2(38,78),9,Color("80b9cc"))
+	var flags=[speed_up,power_up,range_up]
+	for i in 3:
+		var col=[Color("ef7287"),Color("6cb9ff"),Color("ffd26f")][i]
+		draw_rect(Rect2(339+i*98,72,90,14),col if flags[i] else Color("19384d"))
+		label_at(["SPEED","BIG SNOW","LONG SNOW"][i],Vector2(350+i*98,82),8,Color("071729") if flags[i] else Color("62869b"))
+	draw_rect(Rect2(24,96,912,426),Color("2c5368"),false,3)
+	var message_y := 485 if player.p.y + position.y < 205.0 else 102
 	if combo_time>0 and combo>1:
-		label_at("%d HIT"%combo,Vector2(790,112),12,Color("ffd487"))
+		label_at("%d HIT"%combo,Vector2(790,message_y+10),12,Color("ffd487"))
 	if notice_time>0:
-		draw_rect(Rect2(230,102,500,26),Color(.02,.08,.13,.9))
-		label_at(notice,Vector2(480-notice.length()*5,120),10,Color("ffda83"))
+		draw_rect(Rect2(230,message_y,500,26),Color(.02,.08,.13,.9))
+		label_at(notice,Vector2(480-notice.length()*5,message_y+18),10,Color("ffda83"))
 	if not web_mode:
 		label_at("A/D MOVE  SPACE JUMP  J SNOW  1-4 PRACTICE",Vector2(180,533),9,ICE)
 	if (state!="play" or paused) and not web_mode:
