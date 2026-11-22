@@ -62,6 +62,22 @@
 <audio id="bgm" src="audio/forest.mp3" loop preload="none"></audio>
 <script>window.GODOT_CONFIG=__CONFIG_JSON__;</script>
 <script src="game.js?v=__BUILD__"></script>
-<script type="module" src="touch-ui.js?v=__BUILD__"></script>
+<script type="module">
+import('./touch-ui.js?v=__BUILD__').catch(error => {
+  // Network failures can prevent the module from registering its own handlers.
+  const get = id => document.getElementById(id);
+  if (!get('error').hidden) return;
+  const detail = '阶段：加载网页操作界面（touch-ui.js 及其依赖）\n' +
+    (error.message || String(error)) + '\nBuild: __BUILD__\n' + navigator.userAgent;
+  get('error-message').textContent = '操作界面加载失败，请点“重新加载”重试。';
+  get('error-detail').textContent = detail;
+  get('error').hidden = false;
+  get('error-reload').onclick = () => location.reload();
+  get('error-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(detail); get('error-copy').textContent = '已复制'; }
+    catch { get('error-detail').style.userSelect = 'text'; }
+  };
+});
+</script>
 </body>
 </html>

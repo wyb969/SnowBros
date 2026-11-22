@@ -33,7 +33,7 @@ node web/controls.test.mjs
 node web/ui-runtime.test.mjs
 ```
 
-安装同版本的官方 Web 导出模板后，以下命令可生成带触屏操作的网页。将整个 `../snowbro-web` 目录放到支持 WebAssembly 的 HTTP(S) 服务即可试玩。
+安装同版本的官方 Web 导出模板后，以下命令可生成带触屏操作的网页。将整个 `../snowbro-web` 目录放到支持 WebAssembly 的 HTTPS 服务（本机开发可用 localhost）即可试玩。
 
 ```sh
 mkdir -p ../snowbro-web

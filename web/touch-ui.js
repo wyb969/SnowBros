@@ -1,8 +1,11 @@
 import { BUILD, BASE_SIZE, InputState, clamp, controlBox, loadSettings, saveSettings, structuredDefaults } from './controls-model.js';
-import { createGameFetch, safeEngineConfig } from './web-loader.js';
+import { loadGameAssets } from './web-loader.js';
+import { startGodotGame } from './godot-runtime.js';
 
 const $ = id => document.getElementById(id);
-let prefs = loadSettings(localStorage);
+let preferenceStorage;
+try { preferenceStorage = localStorage; } catch { /* Some embedded browsers deny the storage getter. */ }
+let prefs = loadSettings(preferenceStorage);
 const inputs = new InputState();
 // Safari Touch identifiers survive sliding off the control without capture.
 const nativeTouch = navigator.maxTouchPoints > 0 && 'ontouchstart' in window;
@@ -16,10 +19,21 @@ let receiver = null, loaded = false, attached = false, editing = false, selected
 let savedPause = false, errorText = '', game = { state: 'title', paused: false, practice: false, case: 0, score: 0, lives: 3 };
 let audioContext = null, audioVoices = 0;
 const soundGates = new Map(), log = [];
+let stage = '准备加载游戏';
+function recordLog(value) {
+  log.push(String(value).trim().slice(0, 500));
+  if (log.length > 12) log.shift();
+}
+function recordStage(label) {
+  if (!label || label === stage || errorText) return;
+  stage = label;
+  recordLog(label);
+  if (!loaded) $('load-status').textContent = label;
+}
 let drag = null;
 let recovered = false;
 try { recovered = sessionStorage.getItem('snowbro.running') === '1'; } catch {}
-if (recovered) { prefs.sound = false; saveSettings(localStorage, prefs); }
+if (recovered) { prefs.sound = false; saveSettings(preferenceStorage, prefs); }
 function markRunning(value) { try { value ? sessionStorage.setItem('snowbro.running','1') : sessionStorage.removeItem('snowbro.running'); } catch {} }
 function send(data) {
   if (!receiver) return;
@@ -37,7 +51,7 @@ function release() {
   for (const id of [...captures.keys()]) dropCapture(id);
   send({ type: 'release' });
 }
-function persist() { if (!saveSettings(localStorage,prefs)) $('audio-note').textContent = '浏览器暂不允许保存，当前页面仍可使用这些设置。'; }
+function persist() { if (!saveSettings(preferenceStorage,prefs)) $('audio-note').textContent = '浏览器暂不允许保存，当前页面仍可使用这些设置。'; }
 function size() { return { width: window.innerWidth, height: window.innerHeight }; }
 function boxes() {
   const { width, height } = size();
@@ -137,7 +151,7 @@ function sound(kind) {
   } catch { /* Sound failure must never stop play. */ }
 }
 window.SnowBro = {
-  attach(callback) { receiver=callback; attached=true; queueMicrotask(()=>{send({type:'mute',muted:!prefs.sound});render();}); },
+  attach(callback) { if (errorText) return; receiver=callback; attached=true; queueMicrotask(()=>{send({type:'mute',muted:!prefs.sound});render();}); },
   update(value) {
     try {
       const wasPaused=game.paused;
@@ -146,7 +160,7 @@ window.SnowBro = {
       if (game.paused) $('bgm').pause();
       else if (wasPaused && game.state==='play' && prefs.sound) unlockAudio();
       render();
-    } catch (error) { log.push(`状态同步：${String(error)}`); }
+    } catch (error) { recordLog(`状态同步：${String(error)}`); }
   },
   sound, setSound: enabled => setSound(enabled, false)
 };
@@ -264,34 +278,100 @@ window.visualViewport?.addEventListener('resize',()=>{release();layout();});
 window.addEventListener('orientationchange',()=>{release();layout();});
 window.addEventListener('keydown',event=>{if(!settings.open && ['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.code))event.preventDefault();});
 
-function fail(message,error) {
-  if (!$('error').hidden) return;
-  $('error').hidden=false; receiver=null;
-  release(); markRunning(false); $('bgm').pause();
-  errorText=`${message}\n${error?.stack || error?.message || String(error)}\nBuild: ${BUILD}\n${navigator.userAgent}\n${log.slice(-8).join('\n')}`;
-  $('error-message').textContent=message; $('error-detail').textContent=errorText;
-  $('error').hidden=false;
-  try { localStorage.setItem('snowbro.lastError',errorText); } catch {}
+function errorMessage(error) {
+  if (typeof error === 'string') return error;
+  if (error?.message) return error.name ? `${error.name}: ${error.message}` : String(error.message);
+  return error == null ? '浏览器未提供错误描述' : String(error);
 }
-window.addEventListener('error',event=>fail('游戏运行出现异常，已保留错误信息。',event.error || event.message));
-window.addEventListener('unhandledrejection',event=>{event.preventDefault();fail('游戏运行中断，已保留错误信息。',event.reason);});
+
+function errorDescription(error) {
+  const lines = [errorMessage(error)];
+  if (error?.cause) lines.push(`原因：${errorMessage(error.cause)}`);
+  // Safari often puts only function names and URLs in stack.
+  const stack = String(error?.stack || '').split('\n');
+  if (stack[0] === lines[0] || stack[0] === error?.message) stack.shift();
+  if (stack.length && stack[0]) lines.push(stack.slice(0, 6).join('\n'));
+  return lines.join('\n').slice(0, 2800);
+}
+
+function fail(message, error) {
+  if (!$('error').hidden) return;
+  const description = errorDescription(error);
+  let recovery = '请点“重新加载”重试。';
+  if (/\b(401|403)\b|sign[ -]?in|登录|登入|会话过期/i.test(description)) {
+    recovery = '请确认已登录有访问权限的 ChatGPT 账号，再从原试玩链接进入。';
+  } else if (!loaded && /network|fetch|load failed|offline|网络|下载/i.test(description)) {
+    recovery = '请检查网络连接后点“重新加载”。';
+  }
+  $('error').hidden = false;
+  receiver = null; loaded = false; attached = false;
+  release(); markRunning(false); $('bgm').pause(); render();
+  const history = log.length ? '\n' + log.join('\n') : '';
+  errorText = `${message}\n${description}\n阶段：${stage}\nBuild: ${BUILD}\n${navigator.userAgent}${history}`;
+  $('error-message').textContent = `${message} ${recovery}`;
+  $('error-detail').textContent = errorText;
+  try { localStorage.setItem('snowbro.lastError', errorText); } catch {}
+}
+
+function engineAborted(error) {
+  return error?.name === 'RuntimeError' || /\b(?:Aborted\(|wasm trap\b|WebAssembly RuntimeError\b)/i.test(errorMessage(error));
+}
+
+window.addEventListener('error', event => {
+  const message = loaded ? '游戏运行出现异常。' : '游戏加载失败。';
+  fail(message, event.error || event.message);
+});
+window.addEventListener('unhandledrejection', event => {
+  if (!loaded || engineAborted(event.reason)) {
+    event.preventDefault();
+    fail(loaded ? '游戏引擎已停止。' : '游戏加载失败。', event.reason);
+  } else {
+    recordLog(`网页异步任务：${errorMessage(event.reason)}`);
+  }
+});
 canvas.addEventListener('webglcontextlost',event=>{event.preventDefault();fail('图形连接中断。请关闭其他高负载页面后重试。','WebGL context lost');});
 $('error-copy').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(errorText);$('error-copy').textContent='已复制';}catch{$('error-copy').textContent='可长按选择下方错误信息';$('error-detail').style.userSelect='text';}});
 $('error-reload').addEventListener('click',()=>{markRunning(false);window.location.reload();});
 
 async function boot() {
   layout(); refreshSliders();
-  window.fetch=createGameFetch(window.fetch.bind(window),window.location.href,BUILD,window.GODOT_CONFIG.fileSizes['game.wasm']);
-  const missing=Engine.getMissingFeatures({threads:false});
-  if (missing.length) throw new Error(`浏览器缺少运行功能：${missing.join(', ')}`);
-  const engine=new Engine(safeEngineConfig(window.GODOT_CONFIG));
-  await engine.startGame({
-    canvas, onProgress(current,total) {
-      if(total>0){const percent=Math.round(current/total*100);$('load-progress').value=percent;$('load-status').textContent=`正在加载游戏 ${percent}%`;}
-    },
-    onPrintError(line) { log.push(String(line)); if(log.length>16)log.shift(); },
-    onExit(code) { fail('游戏引擎已停止。',`Exit code: ${code}`); }
+  recordStage('检查浏览器和图形支持');
+  if (typeof Engine === 'undefined') throw new Error('游戏引擎脚本未加载（game.js）');
+  const missing = Engine.getMissingFeatures({threads:false});
+  if (missing.length) throw new Error('浏览器缺少运行功能：' + missing.join(', '));
+
+  recordStage('下载并校验游戏资源');
+  const config = window.GODOT_CONFIG;
+  const assets = await loadGameAssets(config, window.location.href, {
+    onProgress({label, loaded: bytes, total, attempt}) {
+      const percent = Math.floor(bytes * 100 / total);
+      $('load-progress').value = percent;
+      $('load-status').textContent = label + ' · ' + percent + '%';
+      if (attempt > 1) recordLog(label);
+    }
   });
-  loaded=true; $('start').textContent='开始游戏'; render(); layout();
+  recordStage('初始化游戏引擎');
+  await startGodotGame(config, assets, {
+    canvas,
+    onPrintError: recordLog,
+    onAbort(reason) { fail('游戏引擎发生异常。', reason || 'Godot abort'); },
+    onExit(code) { fail('游戏引擎已停止。', 'Exit code: ' + code); }
+  });
+  if (!$('error').hidden) return;
+  if (!attached) {
+    recordStage('等待第一关就绪');
+    // A background iOS WebView can suspend all frames until it is visible again.
+    // Only count time while it can render the first Godot frame.
+    let visibleWait = 0;
+    while (!attached && $('error').hidden) {
+      const wasVisible = !document.hidden;
+      await new Promise(resolve => setTimeout(resolve, 200));
+      if (wasVisible && !document.hidden) visibleWait += 200;
+      if (!attached && visibleWait >= 20000) throw new Error('引擎已启动，第一关未完成初始化');
+    }
+  }
+  if (!$('error').hidden) return;
+  recordStage('游戏已就绪');
+  loaded = true; render(); layout();
 }
-boot().catch(error=>fail('游戏加载失败，请查看错误信息。',error));
+boot().catch(error => fail('游戏加载失败，请查看错误信息。', error));

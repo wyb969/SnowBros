@@ -21,7 +21,7 @@ class Element {
   play(){this.paused=false;return Promise.resolve()}
   pause(){this.paused=true}
 }
-async function setup(nativeTouch=false) {
+async function setup(nativeTouch=false, options={}) {
   const elements=new Map(),el=id=>{if(!elements.has(id))elements.set(id,new Element(id));return elements.get(id)};
   const selectors=['joy','jump','fire'].map(k=>{const e=new Element();e.dataset.select=k;return e});
   const storage=new Map(),session=new Map();
@@ -35,7 +35,10 @@ async function setup(nativeTouch=false) {
   class Engine {
     static getMissingFeatures(){return []}
     constructor(config){capturedConfig=config}
-    async startGame(){window.SnowBro.attach(value=>{
+    async startGame(engineOptions){
+      options.onStart?.(engineOptions, window);
+      if(options.delayStart) await options.delayStart;
+      window.SnowBro.attach(value=>{
       const command=JSON.parse(value);commands.push(command);
       if(command.type==='start'||command.type==='restart')state={...state,state:'play',paused:false};
       if(command.type==='pause')state.paused=command.paused;
@@ -44,7 +47,17 @@ async function setup(nativeTouch=false) {
     });}
   }
   const source=fs.readFileSync(new URL('./touch-ui.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
-  const context={...model,...loader,window,document,localStorage,sessionStorage,Engine,Response,ReadableStream,URL,queueMicrotask,getComputedStyle:()=>({paddingLeft:'0',paddingRight:'0',paddingBottom:'0'}),navigator:{maxTouchPoints:nativeTouch?5:0,userAgent:'iPhone DOM test',clipboard:{writeText:async()=>{}}},console};
+  const loadGameAssets = async (_config, _pageURL, _options) => {
+    if (options.assetFailure) throw options.assetFailure;
+    return { wasm: new Uint8Array(), pack: new Uint8Array() };
+  };
+  const startGodotGame = async (config, _assets, engineOptions) => {
+    const engine = new Engine(loader.safeEngineConfig(config));
+    await engine.startGame(engineOptions);
+    return engine;
+  };
+  const context={...model,...loader,loadGameAssets,startGodotGame,window,document,localStorage,sessionStorage,Engine,Response,ReadableStream,URL,queueMicrotask,getComputedStyle:()=>({paddingLeft:'0',paddingRight:'0',paddingBottom:'0'}),navigator:{maxTouchPoints:nativeTouch?5:0,userAgent:'iPhone DOM test',clipboard:{writeText:async()=>{}}},console};
+  if (options.denyStorage) Object.defineProperty(context, 'localStorage', {get() {throw Error('SecurityError: local storage unavailable');}});
   vm.runInNewContext(source,context);await new Promise(setImmediate);await new Promise(setImmediate);
   return {el,selectors,window,document,commands,storage,stats:()=>({reloads,audioStarts,config:capturedConfig})};
 }
@@ -159,4 +172,66 @@ test('Safari touch can drag and save a button layout without starting gameplay i
   const prefs=JSON.parse(ui.storage.get(model.STORAGE_KEY));assert.ok(prefs.fire.x<.9);assert.ok(prefs.fire.y<.87);
   assert.equal(ui.el('error').hidden,true);assert.equal(ui.el('edit-bar').hidden,true);
   assert.ok(!ui.commands.some(c=>c.type==='input'&&c.fire));
+});
+
+test('a Safari error preserves its message beside its frames and the failed asset', async () => {
+  const error = { name: 'TypeError', message: 'game.wasm.part1: HTTP 403', stack: 'download@https://example.com/web-loader.js:120:10', cause: Error('session expired') };
+  const ui = await setup(false, {assetFailure: error});
+  assert.equal(ui.el('error').hidden, false);
+  const detail = ui.el('error-detail').textContent;
+  assert.match(detail, /TypeError: game\.wasm\.part1: HTTP 403/);
+  assert.match(detail, /download@/);
+  assert.match(detail, /session expired/);
+  assert.match(detail, /阶段：下载并校验游戏资源/);
+  assert.match(ui.el('error-message').textContent, /登录/);
+  assert.equal(ui.el('start').disabled, true);
+  assert.equal(ui.storage.get('snowbro.lastError'), detail);
+});
+
+test('an unhandled network rejection during boot reports a load failure',async()=>{
+  const ui=await setup(false,{delayStart:new Promise(()=>{})});
+  const reason={name:'TypeError',message:'Load failed',stack:'fetch@[native code]'};
+  ui.window.emit('unhandledrejection',{reason});
+  assert.match(ui.el('error-message').textContent,/游戏加载失败/);
+  assert.match(ui.el('error-message').textContent,/网络/);
+  assert.match(ui.el('error-detail').textContent,/TypeError: Load failed/);
+});
+
+test('unrelated rejections after startup preserve play; an actual Wasm trap stops it',async()=>{
+  const ui=await setup();
+  let suppressed=false;
+  for(let i=0;i<25;i++) ui.window.emit('unhandledrejection',{reason:Error('audio-delay-'+i+'-'+'x'.repeat(1000)),preventDefault(){suppressed=true}});
+  assert.equal(suppressed,false);
+  assert.equal(ui.el('error').hidden,true);
+  ui.el('start').emit('click');
+  assert.ok(ui.commands.some(c=>c.type==='start'));
+  ui.window.emit('unhandledrejection',{reason:{name:'RuntimeError',message:'unreachable'}});
+  assert.match(ui.el('error-message').textContent,/引擎已停止/);
+  const detail=ui.el('error-detail').textContent;
+  assert.match(detail,/RuntimeError: unreachable/);
+  assert.match(detail,/audio-delay-24-/);
+  assert.doesNotMatch(detail,/audio-delay-0-/);
+  assert.ok(detail.length<8500);
+});
+
+test('WebGL context loss still surfaces its dedicated recovery action',async()=>{
+  const ui=await setup();
+  ui.el('canvas').emit('webglcontextlost');
+  assert.match(ui.el('error-message').textContent,/图形连接中断/);
+  assert.match(ui.el('error-detail').textContent,/WebGL context lost/);
+});
+
+test('a blocked Safari storage getter still allows the first game to start', async () => {
+  const ui = await setup(false, {denyStorage: true});
+  assert.equal(ui.el('error').hidden, true);
+  assert.equal(ui.el('start').disabled, false);
+  ui.el('start').emit('click');
+  assert.ok(ui.commands.some(c => c.type === 'start'));
+});
+test('an abort before Godot attaches leaves controls disabled even if startup resolves', async () => {
+  const ui = await setup(false, {onStart: handlers => handlers.onAbort('Aborted()')});
+  assert.match(ui.el('error-detail').textContent, /Aborted\(\)/);
+  assert.match(ui.el('error-detail').textContent, /阶段：初始化游戏引擎/);
+  assert.equal(ui.el('start').disabled, true);
+  assert.equal(ui.commands.length, 0);
 });
