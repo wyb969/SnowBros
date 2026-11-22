@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#081522">
+<title>SnowBro · 冰雪街机</title>
+<link rel="icon" href="game.icon.png">
+<link rel="stylesheet" href="touch-ui.css?v=__BUILD__">
+</head>
+<body>
+<header class="toolbar">
+  <div class="brand" aria-label="SnowBro">SNOW<span>/</span>BRO <small>雪人兄弟</small></div>
+  <div class="toolbar-actions">
+    <button id="pause" type="button" disabled>暂停</button>
+    <button id="restart" type="button" disabled>重试</button>
+    <button id="settings-open" type="button" class="accent">⚙ 设置</button>
+  </div>
+</header>
+<main class="stage" id="stage">
+  <canvas id="canvas" width="960" height="540" tabindex="0" aria-label="SnowBro 游戏画面"></canvas>
+</main>
+<div class="touch-layer" id="touch-layer" aria-label="游戏控制">
+  <div id="joy" class="control joystick" role="group" aria-label="左右移动摇杆" data-control="joy">
+    <div class="joy-cross"></div><div class="joy-knob" id="joy-knob"></div><span class="control-label">移动</span>
+  </div>
+  <button id="jump" class="control action jump" type="button" data-control="jump" aria-label="跳跃和顶球"><span class="symbol">↑</span><span class="control-label">跳跃</span></button>
+  <button id="fire" class="control action fire" type="button" data-control="fire" aria-label="按住喷雪，近身踢球"><span class="symbol">❄</span><span class="control-label">喷雪</span><small>按住连发</small></button>
+</div>
+<div class="menu-overlay" id="menu">
+  <section class="menu-card">
+    <div class="eyebrow">GODOT 4.7 · SNOW ARCADE</div>
+    <h1 id="menu-title">SNOW<span>/</span>BRO</h1>
+    <p id="menu-description">冻结敌人，踢出雪球，连锁清场。</p>
+    <div class="loading-line" id="load-status" role="status">正在加载游戏…</div>
+    <progress id="load-progress" max="100" value="0"></progress>
+    <button id="start" type="button" class="primary" disabled>正在加载…</button>
+    <button id="practice" type="button" class="secondary" disabled>进入交互练习</button>
+    <p class="menu-help">左侧摇杆移动 · 右侧跳跃 / 喷雪<br>在「设置」中调整按钮大小和位置</p>
+    <nav class="quiet-links"><a href="analysis-feel.html">玩法分析</a><a href="SnowBro-Godot47-Source.zip">下载工程</a><button type="button" id="credits-open">素材说明</button></nav>
+  </section>
+</div>
+<div id="edit-bar" class="edit-bar" hidden><span>拖动摇杆或按钮调整位置</span><button type="button" id="edit-settings">大小设置</button><button type="button" id="edit-done" class="accent">完成</button></div>
+<dialog id="settings" aria-labelledby="settings-title">
+  <div class="panel-head"><div><span class="eyebrow">CONTROLS</span><h2 id="settings-title">操作设置</h2></div><button id="settings-close" type="button" aria-label="关闭设置">完成</button></div>
+  <p class="settings-intro">按你的握持习惯调整。设置会保存在这台设备上。</p>
+  <div class="control-selector" role="group" aria-label="选择调整的控件"><button type="button" data-select="joy" aria-pressed="true">左摇杆</button><button type="button" data-select="jump" aria-pressed="false">跳跃</button><button type="button" data-select="fire" aria-pressed="false">喷雪</button></div>
+  <label class="slider-label" for="control-size">大小 <output id="size-value"></output></label><input id="control-size" type="range" min="70" max="170" step="5">
+  <label class="slider-label" for="control-x">水平位置 <output id="x-value"></output></label><input id="control-x" type="range" min="0" max="100" step="1">
+  <label class="slider-label" for="control-y">垂直位置 <output id="y-value"></output></label><input id="control-y" type="range" min="10" max="100" step="1">
+  <button id="drag-layout" type="button" class="wide">在游戏画面上拖动布局 ↗</button>
+  <label class="slider-label" for="control-opacity">透明度 <output id="opacity-value"></output></label><input id="control-opacity" type="range" min="35" max="100" step="5">
+  <label class="toggle-row"><span>游戏声音<small>Safari 默认静音，可手动开启</small></span><input id="sound-enabled" type="checkbox"></label>
+  <p class="audio-note" id="audio-note" role="status"></p>
+  <div class="panel-actions"><button id="defaults" type="button">恢复默认布局</button><button id="practice-next" type="button">切换练习场</button></div>
+  <details class="help-details"><summary>键盘操作与素材说明</summary><p>A/D 移动，空格跳跃，J 喷雪或踢球。数字 1–4 选择练习场，R 重试，P 暂停，M 声音。横屏操作更舒适。</p><p>音乐：House In a Forest Loop，HorrorPen，2012，<a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>，转码为 MP3，未改动曲目内容。<a href="https://opengameart.org/content/loop-house-in-a-forest">原始来源</a>。字体：Press Start 2P，SIL OFL 1.1。图形与合成音效由本工程绘制、制作；原作权利归其权利人所有。</p><p>第一关交互致敬版。精确 FC 参数及原作美术仍在对照完善。</p></details>
+  <p class="build-label">__BUILD__</p>
+</dialog>
+<section class="error-overlay" id="error" hidden role="alert">
+  <div class="menu-card"><h2>游戏暂时中断</h2><p id="error-message"></p><pre id="error-detail"></pre><div class="panel-actions"><button type="button" id="error-copy">复制错误信息</button><button type="button" id="error-reload" class="primary">重新加载</button></div><p class="menu-help">页面会保留错误信息，方便继续排查。</p></div>
+</section>
+<audio id="bgm" src="audio/forest.mp3" loop preload="none"></audio>
+<script>window.GODOT_CONFIG=__CONFIG_JSON__;</script>
+<script src="game.js?v=__BUILD__"></script>
+<script type="module" src="touch-ui.js?v=__BUILD__"></script>
+</body>
+</html>
