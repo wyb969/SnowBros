@@ -11,6 +11,9 @@ const PLAYER_MOVE_SPEED = LOGIC_WIDTH*.22
 const PLAYER_RED_SPEED = PLAYER_MOVE_SPEED*1.3
 const SNOW_MAX = 6
 const BALL_RADIUS = 24.0
+const BALL_ENEMY_REACH = 40.0
+const BALL_LEFT_WALL = 50.0
+const BALL_RIGHT_WALL = 910.0
 const RIDE_ENTRY_INVINCIBILITY = .75
 const PUSH_SPEED = 68.0
 const RED_PUSH_SPEED = 110.0
@@ -21,15 +24,30 @@ const STACK_DISTANCE = 14.0
 const BALL_FRICTION = 2.0
 const BALL_WALL_RESTITUTION = 0.97
 const BALL_ENEMY_RETENTION = 0.995
-const SHOT_SPEED = LOGIC_WIDTH*1.95
-const SHOT_CRUISE_TIME = .10
-const SHOT_LONG_CRUISE_TIME = .20
-const SHOT_BRAKE_TIME = .20
-const SHOT_END_SPEED_RATIO = .12
+const SHOT_INTERVAL = .20
+const SHOT_TAP_INTERVAL = .10
+const SHOT_TAP_BUFFER = .045
+# Ordinary snow fits the first-floor trace; long snow follows the tutorial
+# capture's native 256 x 224 center positions, sampled at 60 Hz.
+const SHOT_SPEED = LOGIC_WIDTH*1.125
+const SHOT_CRUISE_TIME = .02
+const SHOT_BRAKE_TIME = .33
+const SHOT_LONG_SPEED = LOGIC_WIDTH*1.875
+const SHOT_LONG_CRUISE_TIME = 8.0/60.0
+const SHOT_LONG_BRAKE_TIME = 10.0/60.0
+# The hand is 24 logic pixels above the platform; allow for the enlarged
+# crescent's lower rim when adapting the seven-pixel drop to this character.
+const LONG_SHOT_SCALE = Vector2(LOGIC_WIDTH/256.0,1.70)
+const LONG_FIRST_CENTER = 9.5
+const LONG_TRACE = [
+	Vector2(0,0),Vector2(8,-1),Vector2(16,-3),Vector2(24,-4),Vector2(32,-4),Vector2(40,-4),
+	Vector2(48,-4),Vector2(56,-4),Vector2(59,-3),Vector2(62,-1),Vector2(65,0),Vector2(68,2),
+	Vector2(70,3),Vector2(71,4),Vector2(73,5),Vector2(74,6),Vector2(75,7),Vector2(75.05,7)
+]
 const SHOT_CRUISE_RISE = LOGIC_WIDTH*.0015
 const SHOT_SINK = LOGIC_WIDTH*.025
 const SHOT_DRIFT_TIME = .46
-const SHOT_DRIFT_SPEED_Y = 316.0
+const SHOT_DRIFT_DROP = 106.0
 const SHOT_FLUTTER_START = .66
 const SHOT_FLUTTER_AMPLITUDE = .8
 # Fitting start from the user's normalized measurements, using feet position.
@@ -75,6 +93,7 @@ var lives = 3
 var state = "title"
 var clock = 0.0
 var cooldown = 0.0
+var fire_buffer = 0.0
 var invincible = 0.0
 var elapsed = 0.0
 var paused = false
@@ -128,7 +147,12 @@ func start_audio():
 	if not web_mode and is_instance_valid(music): music.play()
 
 func release_controls():
-	web_axis=0.0; touch_left=false; touch_right=false; touch_fire=false; jump_request=false; jump_buffer=0.0; touch_inputs.clear()
+	web_axis=0.0; touch_left=false; touch_right=false; touch_fire=false; fire_buffer=0.0; jump_request=false; jump_buffer=0.0; touch_inputs.clear()
+
+func set_touch_fire(pressed: bool):
+	if pressed and not touch_fire and state=="play" and not paused:
+		fire_buffer=SHOT_TAP_BUFFER
+	touch_fire=pressed
 
 func _web_command(arguments):
 	if arguments.is_empty(): return
@@ -139,7 +163,7 @@ func _web_command(arguments):
 	match str(data.get("type","")):
 		"input":
 			web_axis=clampf(float(data.get("axis",0)), -1.0, 1.0)
-			touch_fire=bool(data.get("fire",false))
+			set_touch_fire(bool(data.get("fire",false)))
 		"jump":
 			if state=="play" and not paused: jump_request=true
 		"start": reset(); start_audio()
@@ -159,14 +183,14 @@ func sync_web_state(dt):
 	web_shell.update(JSON.stringify({"state":state,"paused":paused,"practice":practice,"case":practice_case,"score":score,"lives":lives}))
 
 func new_enemy(pos, id, snow=0):
-	return {"id":id,"p":pos,"v":Vector2.ZERO,"dir":1 if id%2==0 else -1,"ground":true,"snow":snow,"roll":false,"thaw":12.0,"jump":2.0+id*0.4,"chain":0,"spin":0.0,"impact":0.0,"flash":0.0,"bounces":0,"floor_bounces":0,"stack_tone":0,"travel":[],"credited":false,"dead":false,"chain_id":0,"previous":pos}
+	return {"id":id,"p":pos,"v":Vector2.ZERO,"dir":1 if id%2==0 else -1,"ground":true,"snow":snow,"roll":false,"thaw":12.0,"jump":2.0+id*0.4,"chain":0,"spin":0.0,"impact":0.0,"flash":0.0,"bounces":0,"stack_tone":0,"travel":[],"credited":false,"dead":false,"chain_id":0,"previous":pos}
 
 func reset(training=false, case_index=-1):
 	if case_index>=0: practice_case=case_index%4
 	practice=training
 	release_controls()
 	player = {"p":Vector2(130,492),"v":Vector2.ZERO,"dir":1,"ground":true,"ride":-1,"ride_lock":0.0,"standing":-1,"pushing":false,"attack":0.0,"momentum":0.0}
-	enemies.clear(); shots.clear(); particles.clear(); gifts.clear(); float_text.clear(); pair_contacts.clear(); defeated.clear(); chains.clear(); next_chain=1; next_shot=0; combo_time=0
+	enemies.clear(); shots.clear(); particles.clear(); gifts.clear(); float_text.clear(); pair_contacts.clear(); defeated.clear(); chains.clear(); next_chain=1; next_shot=0; combo_time=0; cooldown=0.0
 	jump_active=false; jump_angle=0; jump_spin_dir=1
 	ledge_grace=0.0; landing_pose=0.0; landing_strength=0.0; stride_distance=0.0
 	if practice:
@@ -187,11 +211,13 @@ func reset(training=false, case_index=-1):
 					enemies.append(new_enemy(Vector2(ball_x[i],172),i,SNOW_MAX))
 				gifts.append({"p":Vector2(365,172),"life":999.0,"kind":"red"})
 			3:
-				player.p=Vector2(180,492)
-				enemies.append(new_enemy(Vector2(340,492),0,1))
+				player.p=Vector2(220,492)
+				var range_target = new_enemy(Vector2(510,492),0,1)
+				range_target.thaw = INF
+				enemies.append(range_target)
 				enemies.append(new_enemy(Vector2(600,388),1,2))
-				gifts.append({"p":Vector2(245,492),"life":999.0,"kind":"blue"})
-				gifts.append({"p":Vector2(720,492),"life":999.0,"kind":"yellow"})
+				gifts.append({"p":Vector2(286,492),"life":999.0,"kind":"blue"})
+				gifts.append({"p":Vector2(154,492),"life":999.0,"kind":"yellow"})
 	else:
 		var spawns=[Vector2(180,172),Vector2(480,172),Vector2(780,172),Vector2(230,280),Vector2(720,280),Vector2(470,388)]
 		for i in spawns.size(): enemies.append(new_enemy(spawns[i],i))
@@ -199,7 +225,7 @@ func reset(training=false, case_index=-1):
 	speed_up=false; power_up=false; range_up=false; combo=0; notice_time=0; hit_flash=0
 	stage_scroll_y = 0.0
 	position = Vector2.ZERO
-	if practice: announce(["1: PUSH / STAND / BUMP / KICK","2: ONE BALL / FOUR TARGETS","3: RED POTION / PUSH TWO / TOP JUMP","4: SNOW ARC / BLUE SIZE / YELLOW LENGTH"][practice_case],4.0)
+	if practice: announce(["1: PUSH / STAND / BUMP / KICK","2: ONE BALL / FOUR TARGETS","3: RED POTION / PUSH TWO / TOP JUMP","4: SHOT RANGE / YELLOW LEFT / BLUE RIGHT"][practice_case],4.0)
 
 func announce(message, duration=1.6):
 	notice=message; notice_time=duration
@@ -221,7 +247,9 @@ func _input(event):
 			muted = not muted
 			if is_instance_valid(music): music.volume_db = -80 if muted else -18
 			if web_shell!=null: web_shell.setSound(not muted)
-		if state=="play" and not paused and event.physical_keycode in [KEY_SPACE,KEY_W,KEY_UP]: jump_request=true
+		if state=="play" and not paused:
+			if event.physical_keycode in [KEY_SPACE,KEY_W,KEY_UP]: jump_request=true
+			if event.physical_keycode in [KEY_J,KEY_Z]: fire_buffer=SHOT_TAP_BUFFER
 	if event is InputEventScreenTouch or event is InputEventMouseButton:
 		if web_mode: return
 		var finger=event.index if event is InputEventScreenTouch else -1
@@ -240,7 +268,7 @@ func _input(event):
 				elif event.position.x<740: jump_request=true
 				else: touch_inputs[finger]="fire"
 		else: touch_inputs.erase(finger)
-		touch_left=touch_inputs.values().has("left"); touch_right=touch_inputs.values().has("right"); touch_fire=touch_inputs.values().has("fire")
+		touch_left=touch_inputs.values().has("left"); touch_right=touch_inputs.values().has("right"); set_touch_fire(touch_inputs.values().has("fire"))
 
 func move_body(b,dt,gravity=1000.0):
 	var old: Vector2=b.p
@@ -302,12 +330,12 @@ func tint_ball_row(row):
 func space_ball_row(row):
 	# The wall constrains the whole row. A second pass only acts when the
 	# forward pass would put the rightmost center outside the arena.
-	var left_limit := 50.0
+	var left_limit := BALL_LEFT_WALL
 	for ball in row:
 		ball.p.x = maxf(ball.p.x, left_limit)
 		left_limit = ball.p.x + STACK_DISTANCE
-	if not row.is_empty() and row.back().p.x > 910.0:
-		var right_limit := 910.0
+	if not row.is_empty() and row.back().p.x > BALL_RIGHT_WALL:
+		var right_limit := BALL_RIGHT_WALL
 		for i in range(row.size()-1,-1,-1):
 			row[i].p.x = minf(row[i].p.x, right_limit)
 			right_limit = row[i].p.x - STACK_DISTANCE
@@ -331,7 +359,7 @@ func push_ball_group(seed, push_distance):
 	var direction := signf(push_distance)
 	if direction < 0.0: row.reverse()
 	var start: int = row.find(seed)
-	var wall := 910.0 if direction > 0.0 else -50.0
+	var wall := BALL_RIGHT_WALL if direction > 0.0 else -BALL_LEFT_WALL
 	# Each ball ahead needs one visible rim's worth of space at the wall.
 	var proposed := minf(seed.p.x * direction + absf(push_distance), wall - (row.size()-1-start) * STACK_DISTANCE)
 	for i in range(start, row.size()):
@@ -402,7 +430,7 @@ func ball_velocity(e, dt) -> Vector2:
 	velocity.y += 1000.0 * dt
 	return velocity
 
-func advance_ball(e, dt, from_time, to_time):
+func advance_ball(e, dt, from_time, to_time, targets):
 	var old: Vector2 = e.p
 	e.v = ball_velocity(e, dt)
 	e.p += e.v * dt
@@ -419,27 +447,64 @@ func advance_ball(e, dt, from_time, to_time):
 			if landing_speed > 180.0: ball_impact(e, .3)
 	if e.roll:
 		e.travel.append([from_time, to_time, old, e.p])
-		if e.ground and absf(e.v.x) < 65.0: e.roll = false
+		if e.ground:
+			var wall := BALL_LEFT_WALL if e.p.x < LOGIC_WIDTH*.5 else BALL_RIGHT_WALL
+			if absf(e.p.x-wall) <= .001 and lowest_floor_at(e.p):
+				break_rolling_ball(e,wall,targets,to_time)
+			elif absf(e.v.x) < 65.0:
+				e.roll = false
 	e.spin += (e.p.x - old.x) / BALL_RADIUS
 	e.impact = move_toward(e.impact, 0.0, dt * 5.0)
 
 func move_ball(e, dt):
 	advance_snowballs([e], [], dt)
 
-func hit_ball_wall(e, wall_x):
+func lowest_floor_at(foot: Vector2) -> bool:
+	var lowest_y := -INF
+	for platform in platforms: lowest_y = maxf(lowest_y, platform.position.y)
+	return absf(foot.y-lowest_y) <= 1.0 and support_at(Vector2(foot.x,lowest_y),BALL_FOOT_MARGIN) != null
+
+func break_rolling_ball(e, wall_x, targets, contact_time):
+	e.p.x = wall_x
+	# Wall and enemy sweeps can finish at the same instant, including a
+	# kick from rest against the wall. Resolve all touching live bodies
+	# with the incoming velocity before the terminal impact stops the ball.
+	for target in targets:
+		if target.dead: continue
+		var at_contact: Vector2 = target.previous.lerp(target.p, contact_time)
+		if e.p.distance_squared_to(at_contact) <= BALL_ENEMY_REACH * BALL_ENEMY_REACH:
+			target.p = at_contact
+			roll_hit(e,target)
+	if player.ride == e.id:
+		# The next player step releases the carrier using its existing immunity
+		# and lockout. Bring the rider all the way to the contact first.
+		player.p = e.p
+	e.dead = true
+	e.roll = false
+	e.v = Vector2.ZERO
+	ball_impact(e,.85,Vector2(-1 if wall_x==BALL_LEFT_WALL else 1,0))
+	burst(e.p-Vector2(0,BALL_RADIUS), WHITE)
+
+func hit_ball_wall(e, wall_x, balls, targets, contact_time):
 	e.p.x = wall_x
 	if not e.roll:
 		e.v.x = 0.0
 		return
+	var incoming := signf(e.v.x)
+	if (e.v.y >= 0.0 and lowest_floor_at(e.p)) or e.bounces+1 >= 15:
+		break_rolling_ball(e,wall_x,targets,contact_time)
+		return
+	# An already overlapping group includes the reflected ball's neighbors.
+	# Their continuous contact does not become a fresh head-on strike just
+	# because the front ball has reached the wall a fraction of a frame earlier.
+	for neighbor in balls:
+		if neighbor.id == e.id or neighbor.dead or not neighbor.roll: continue
+		if incoming == signf(neighbor.v.x) and e.p.distance_squared_to(neighbor.p) <= (2.0*BALL_RADIUS+.02)**2:
+			pair_contacts[pair_key(e,neighbor)] = true
 	e.v.x *= -BALL_WALL_RESTITUTION
 	e.dir = signf(e.v.x)
 	e.bounces += 1
-	if e.ground and not platforms.any(func(plat): return plat.position.y > e.p.y + 1.0):
-		e.floor_bounces += 1
-	ball_impact(e, .65, Vector2(-e.dir, 0))
-	if e.floor_bounces >= 2 or e.bounces >= 15:
-		e.dead = true
-		burst(e.p - Vector2(0,22), WHITE)
+	ball_impact(e,.65,Vector2(incoming,0))
 
 # Time on the moving relative segment when the two circular bodies first touch.
 # An overlap at the start counts, including a ball kicked next to a target.
@@ -468,7 +533,7 @@ func next_ball_contact(balls, targets, dt, progress):
 		var travel: Vector2 = end - ball.p
 		motion[ball.id] = travel
 		if travel.x != 0.0:
-			var wall_x := 910.0 if travel.x > 0.0 else 50.0
+			var wall_x := BALL_RIGHT_WALL if travel.x > 0.0 else BALL_LEFT_WALL
 			var wall_at: float = (wall_x - ball.p.x) / travel.x
 			if wall_at >= 0.0 and wall_at <= 1.0 and wall_at < hit.at:
 				hit = {"at": wall_at, "kind": "wall", "a": ball, "x": wall_x}
@@ -476,7 +541,7 @@ func next_ball_contact(balls, targets, dt, progress):
 		for target in targets:
 			if target.dead: continue
 			var start: Vector2 = target.previous.lerp(target.p, progress)
-			var at := contact_fraction(ball.p - start, travel - (target.p - start), 40.0)
+			var at := contact_fraction(ball.p - start, travel - (target.p - start), BALL_ENEMY_REACH)
 			if at < hit.at:
 				hit = {"at": at, "kind": "enemy", "a": ball, "b": target}
 	for i in balls.size():
@@ -503,6 +568,7 @@ func next_ball_contact(balls, targets, dt, progress):
 
 func advance_snowballs(balls, targets, dt):
 	for ball in balls:
+		ball.p.x = clampf(ball.p.x,BALL_LEFT_WALL,BALL_RIGHT_WALL)
 		ball.previous = ball.p
 		ball.travel.clear()
 	var progress := 0.0
@@ -511,10 +577,12 @@ func advance_snowballs(balls, targets, dt):
 		var end := lerpf(progress, 1.0, minf(hit.at, 1.0))
 		if end > progress:
 			for ball in balls:
-				if not ball.dead: advance_ball(ball, (end - progress) * dt, progress, end)
+				if not ball.dead: advance_ball(ball, (end - progress) * dt, progress, end, targets)
 		progress = end
+		# A ball may have landed on the exit during this exact advance.
+		if hit.has("a") and (hit.a.dead or (hit.has("b") and hit.b.dead)): continue
 		match hit.get("kind", ""):
-			"wall": hit_ball_wall(hit.a, hit.x)
+			"wall": hit_ball_wall(hit.a, hit.x, balls, targets, progress)
 			"pair": respond_to_pair(hit.a, hit.b, hit.normal)
 			"enemy":
 				hit.b.p = hit.b.previous.lerp(hit.b.p, progress)
@@ -839,8 +907,11 @@ func attack():
 
 func make_shot(origin, direction, power=1, extended=false):
 	var cruise: float = SHOT_LONG_CRUISE_TIME if extended else SHOT_CRUISE_TIME
-	var duration := cruise + SHOT_BRAKE_TIME + SHOT_DRIFT_TIME
-	var shot = {"p":origin, "origin":origin, "dir":direction, "v":Vector2(direction*SHOT_SPEED,0),
+	var speed: float = SHOT_LONG_SPEED if extended else SHOT_SPEED
+	var brake: float = SHOT_LONG_BRAKE_TIME if extended else SHOT_BRAKE_TIME
+	var duration := cruise + brake + SHOT_DRIFT_TIME
+	var shot = {"p":origin, "origin":origin, "dir":direction, "v":Vector2(direction*speed,0),
+		"brake":brake,
 		"age":0.0, "duration":duration, "cruise":cruise, "life":duration,
 		"power":power, "extended":extended, "phase":next_shot*2.399963}
 	next_shot += 1
@@ -849,26 +920,49 @@ func make_shot(origin, direction, power=1, extended=false):
 func shot_tail_weight(brake_progress):
 	return smoothstep(SHOT_FLUTTER_START, 1.0, brake_progress)
 
+func long_shot_offset(shot, flight: float, flutter: bool) -> Vector2:
+	var frame := flight*60.0
+	if frame<1.0:
+		return Vector2(shot.dir*LONG_FIRST_CENTER*LONG_SHOT_SCALE.x*frame,0)
+	# Frame zero of the capture is the first *visible* center just past the
+	# glove. Keep the muzzle origin separate from that observed displacement.
+	var sample := clampf(frame-1.0,0,LONG_TRACE.size()-1)
+	var i := floori(sample)
+	var native: Vector2=LONG_TRACE[i].lerp(LONG_TRACE[mini(i+1,LONG_TRACE.size()-1)],sample-i)
+	var offset: Vector2=(Vector2(LONG_FIRST_CENTER,0)+native)*LONG_SHOT_SCALE
+	var extra := maxf(0.0,flight-LONG_TRACE.size()/60.0)
+	if extra>0:
+		# The last two centers differ by less than a pixel. Off a ledge the
+		# spent flake keeps dropping with only a few pixels of forward carry.
+		var t:=clampf(extra/SHOT_DRIFT_TIME,0,1)
+		offset.x+=extra*lerpf(11.25,1.0,t*.5)
+		offset.y+=(SHOT_SINK+SHOT_DRIFT_DROP-LONG_TRACE[-1].y*LONG_SHOT_SCALE.y)*t*t
+		if flutter: offset.y+=smoothstep(0,.3,t)*sin(t*TAU*2+shot.phase)*SHOT_FLUTTER_AMPLITUDE
+	return Vector2(shot.dir*offset.x,offset.y)
+
 func shot_path(shot, age, flutter=true):
 	var flight := clampf(age, 0.0, shot.duration)
+	if shot.extended: return shot.origin + long_shot_offset(shot,flight,flutter)
 	var cruise: float = shot.cruise
-	var u := clampf((flight-cruise)/SHOT_BRAKE_TIME, 0, 1)
-	var drag: float = SHOT_END_SPEED_RATIO*u + (1.0-SHOT_END_SPEED_RATIO)*(1.0-pow(1.0-u,4.0))/4.0
-	var distance: float = SHOT_SPEED*(minf(flight,cruise) + SHOT_BRAKE_TIME*drag)
+	var brake: float = shot.brake
+	var u := clampf((flight-cruise)/brake, 0, 1)
+	var drag: float = .18*u+.82*(1.0-pow(1.0-u,3.0))/3.0
+	var distance: float = SHOT_SPEED*(minf(flight,cruise) + brake*drag)
 	var sink: float = (u-.12*(1.0-exp(-u/.12)))/(1.0-.12*(1.0-exp(-1.0/.12)))
 	var y: float = -SHOT_CRUISE_RISE*smoothstep(0,1,minf(flight/cruise,1.0)) + SHOT_SINK*sink
 	# Once the calibrated braking phase ends the flake folds over and drifts
 	# down. Integrate velocities so neither axis jumps at the transition.
-	var falling := maxf(0.0, flight-cruise-SHOT_BRAKE_TIME)
+	var falling := maxf(0.0, flight-cruise-brake)
 	if falling > 0:
 		var t := clampf(falling/SHOT_DRIFT_TIME, 0, 1)
 		var final_dx := 3.0
-		var entry_dx: float = SHOT_SPEED*SHOT_END_SPEED_RATIO
+		var entry_dx: float = SHOT_SPEED*.18
 		distance += SHOT_DRIFT_TIME*(final_dx*t + (entry_dx-final_dx)*(1.0-pow(1.0-t,3))/3.0)
-		var entry_dy: float = (SHOT_SINK/SHOT_BRAKE_TIME)*(1.0-exp(-1.0/.12))/(1.0-.12*(1.0-exp(-1.0/.12)))
-		y += falling*lerpf(entry_dy, SHOT_DRIFT_SPEED_Y, t*.5)
+		var entry_dy: float = (SHOT_SINK/brake)*(1.0-exp(-1.0/.12))/(1.0-.12*(1.0-exp(-1.0/.12)))
+		var final_dy: float = 2.0*SHOT_DRIFT_DROP/SHOT_DRIFT_TIME-entry_dy
+		y += falling*lerpf(entry_dy, final_dy, t*.5)
 	if flutter and u > SHOT_FLUTTER_START:
-		var phase: float = (flight-cruise-SHOT_BRAKE_TIME*SHOT_FLUTTER_START)*TAU*6.5 + shot.phase
+		var phase: float = (flight-cruise-brake*SHOT_FLUTTER_START)*TAU*6.5 + shot.phase
 		y += shot_tail_weight(u)*sin(phase)*SHOT_FLUTTER_AMPLITUDE
 	return shot.origin + Vector2(shot.dir*distance, y)
 
@@ -877,8 +971,8 @@ func shot_extent(shot):
 	return Vector2(radius*(2.4 if shot.get("extended",false) else 1.0),radius)
 
 func shot_tilt(shot, age: float) -> float:
-	var brake := clampf((age-shot.cruise)/SHOT_BRAKE_TIME, 0, 1)
-	var drift := clampf((age-shot.cruise-SHOT_BRAKE_TIME)/SHOT_DRIFT_TIME, 0, 1)
+	var brake := clampf((age-shot.cruise)/shot.brake, 0, 1)
+	var drift := clampf((age-shot.cruise-shot.brake)/SHOT_DRIFT_TIME, 0, 1)
 	var flutter: float = sin(age*TAU*5.5+shot.phase)*shot_tail_weight(brake)
 	return shot.dir*(brake*brake*.32+drift*.72+flutter*.14)
 
@@ -984,7 +1078,7 @@ func _physics_process(dt):
 
 func step_game(dt):
 	if state!="play": return
-	elapsed+=dt; cooldown-=dt; combo_time=maxf(0.0,combo_time-dt); invincible=maxf(0.0,invincible-dt); notice_time-=dt; hit_flash=maxf(0.0,hit_flash-dt)
+	elapsed+=dt; combo_time=maxf(0.0,combo_time-dt); invincible=maxf(0.0,invincible-dt); notice_time-=dt; hit_flash=maxf(0.0,hit_flash-dt)
 	var axis=clampf(float(key(KEY_RIGHT) or key(KEY_D) or touch_right)-float(key(KEY_LEFT) or key(KEY_A) or touch_left)+web_axis,-1.0,1.0)
 	var balls = []
 	var targets = []
@@ -1012,8 +1106,18 @@ func step_game(dt):
 	var player_start: Vector2 = player.p
 	update_player(dt,axis)
 	catch_passing_ball(balls, player_start)
-	if (key(KEY_J) or key(KEY_Z) or touch_fire) and cooldown<=0 and player.ride<0:
-		cooldown=.15; attack()
+	var remaining: float = cooldown
+	cooldown=maxf(0.0,remaining-dt)
+	# A fresh press can use the faster six-frame shot seen in the tutorial.
+	# Repeated snapshots of a held button never set fire_buffer again.
+	var gate: float = SHOT_INTERVAL-SHOT_TAP_INTERVAL if fire_buffer>0.0 else 0.0
+	if player.ride<0 and cooldown<=gate+.000001 and (key(KEY_J) or key(KEY_Z) or touch_fire or fire_buffer>0):
+		# Preserve the fraction of the tick spent past the chosen recovery gate.
+		var overshoot := maxf(0.0,dt-(remaining-gate)) if remaining>gate else 0.0
+		cooldown=maxf(0.0,SHOT_INTERVAL-overshoot)
+		fire_buffer=0.0
+		attack()
+	fire_buffer=maxf(0.0,fire_buffer-dt)
 	update_shots(dt)
 	for e in enemies:
 		if e.dead: continue
@@ -1070,8 +1174,8 @@ var flake_ridge := PackedVector2Array([
 
 func draw_snow_shot(shot):
 	var size: Vector2 = shot_extent(shot)
-	var brake: float = clampf((shot.age-shot.cruise)/SHOT_BRAKE_TIME, 0, 1)
-	var drift: float = clampf((shot.age-shot.cruise-SHOT_BRAKE_TIME)/SHOT_DRIFT_TIME, 0, 1)
+	var brake: float = clampf((shot.age-shot.cruise)/shot.brake, 0, 1)
+	var drift: float = clampf((shot.age-shot.cruise-shot.brake)/SHOT_DRIFT_TIME, 0, 1)
 	var tilt := shot_tilt(shot,shot.age)
 	var pos: Vector2 = shot.p.round()
 	var face := Vector2(shot.dir*size.x,size.y)
@@ -1198,6 +1302,10 @@ func _draw():
 		draw_rect(Rect2(plat.position-Vector2(0,3),Vector2(plat.size.x,7)),ICE)
 		for x in range(int(plat.position.x)+9,int(plat.end.x),24):
 			draw_colored_polygon(PackedVector2Array([Vector2(x,plat.position.y+4),Vector2(x+7,plat.position.y+4),Vector2(x+3,plat.position.y+14)]),Color("8cd4e9"))
+	if practice and practice_case==3:
+		# A repeatable firing line for comparing both shots from the same spot.
+		draw_rect(Rect2(209,494,22,3),WHITE)
+		draw_rect(Rect2(218,497,4,5),WHITE)
 	for g in gifts:
 		if g.life<2 and int(clock*8)%2==0: continue
 		var colors={"red":Color("ef7287"),"blue":Color("6cb9ff"),"yellow":Color("ffd26f"),"points":Color("ffcd70")}

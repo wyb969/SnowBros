@@ -29,11 +29,11 @@ func run():
 	var start: Vector2=shot.p
 	var normal_reach:float=game.shot_path(shot,shot.duration).x-shot.origin.x
 	for i in 6: game.update_shots(DT)
-	check((shot.p.x-start.x)/.05/960.0>1.85 and (shot.p.x-start.x)/.05/960.0<2.08,'snow initial horizontal speed matches the normalized reference')
+	check((shot.p.x-start.x)/.05/960.0>1.0 and (shot.p.x-start.x)/.05/960.0<1.2,'normal launch follows the narrower first-floor arcade shot trace')
 	check(absf(shot.p.y-start.y)<2,'snow leaves almost level rather than bending downward immediately')
 	fixture();game.player.dir=-1;shot=fire();start=shot.p
 	for i in 6:game.update_shots(DT)
-	check(shot.p.x<start.x-90 and absf(shot.p.y-start.y)<2,'left-facing snow has the same fast near-level launch')
+	check(shot.p.x<start.x-48 and absf(shot.p.y-start.y)<2,'left-facing snow has the same near-level launch')
 	fixture();pickup('blue');shot=fire()
 	var blue_size: Vector2=game.shot_extent(shot)
 	check(blue_size.x>normal_size.x*1.5 and blue_size.y>normal_size.y*1.5 and shot.power==2,'blue bottle enlarges the flake in both dimensions and increases snow power')

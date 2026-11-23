@@ -56,7 +56,6 @@ func test_ride_protection():
 	game.enemies=[carrier]; game.player.p=Vector2(885,492)
 	game.invincible=.1
 	game.kick_ball(carrier,1)
-	carrier.floor_bounces=1
 	game.step_game(dt)
 	check(game.player.ride==carrier.id and is_equal_approx(game.invincible,.75),
 		'ordinary close contact extends shorter immunity without blocking pickup')
@@ -72,6 +71,69 @@ func test_ride_protection():
 	for i in 18: game.step_game(dt)
 	check(game.lives==lives_before-1 and game.invincible>2,
 		'an enemy at the same spot deals normal damage once the carried-over immunity expires')
+
+func test_roll_exits():
+	var dt := 1.0/120.0
+	for direction in [-1,1]:
+		var wall_x := 910.0 if direction > 0 else 50.0
+		fixture()
+		# An outward launch already at the corner is a time-zero contact.
+		var rim = ball(Vector2(wall_x,492),0)
+		var trailing = ball(Vector2(wall_x-direction*14,492),1)
+		game.enemies=[trailing,rim]
+		game.kick_stack(trailing,direction)
+		game.step_game(dt)
+		check(rim.dead and not trailing.dead and signf(trailing.v.x)==direction, 'front stack member exits without kicking its partner backward')
+		for i in 3: game.step_game(dt)
+		check(game.enemies.is_empty() and game.score==1000, 'both stack members leave at the same bottom edge with no extra scores')
+		fixture()
+		var upper = ball(Vector2(wall_x,172),2)
+		var partner = ball(Vector2(wall_x-14.0*direction,172),3)
+		game.enemies=[upper,partner]
+		game.kick_stack(partner,direction)
+		for i in 8: game.step_game(dt)
+		check(upper.bounces==1 and partner.bounces==1 and not upper.dead and not partner.dead and signf(upper.v.x)==-direction and signf(partner.v.x)==-direction, 'an overlapping upper stack reflects each member once and clears the corner')
+		fixture()
+		rim=ball(Vector2(wall_x-direction,491),4)
+		rim.ground=false; game.kick_ball(rim,direction); rim.v.y=game.ROLL_SPEED
+		game.move_ball(rim,dt)
+		check(rim.dead, 'simultaneous descending floor and side contact uses the bottom exit')
+		fixture()
+		rim=ball(Vector2(wall_x,490),6)
+		rim.ground=false; game.kick_ball(rim,direction); rim.v=Vector2(0,360)
+		game.move_ball(rim,dt)
+		check(rim.dead and rim.p.x==wall_x, 'a downward roll landing flush against the side cannot settle into a live trapped ball')
+		fixture()
+		rim=ball(Vector2(wall_x+direction*.05,492),5)
+		game.kick_ball(rim,direction); game.move_ball(rim,dt)
+		check(rim.dead and absf(rim.p.x-wall_x)<.001, 'a small overshoot cannot leak a live ball past the side')
+func test_exit_contact_ties():
+	for direction in [-1,1]:
+		var wall_x: float = game.BALL_RIGHT_WALL if direction > 0 else game.BALL_LEFT_WALL
+		fixture()
+		var rim = ball(Vector2(wall_x,492),0)
+		var target = game.new_enemy(Vector2(wall_x-direction*6,492),1)
+		var second = game.new_enemy(Vector2(wall_x-direction*19,492),2)
+		var clear = game.new_enemy(Vector2(wall_x-direction*41,492),3)
+		game.enemies=[clear,rim,second,target]
+		game.player.p=rim.p-Vector2(direction*38,0)
+		game.player.dir=direction
+		game.attack()
+		game.step_game(1.0/120.0)
+		check(rim.dead and target.dead and second.dead and not clear.dead and game.score==3500,
+			'kicking flush to either bottom wall hits exactly the two touching enemies before shattering')
+		check(game.defeated.size()==2 and game.defeated.all(func(body): return signf(body.v.x)==direction),
+			'tied impacts retain the incoming direction while the ball disappears')
+		game.step_game(1.0/120.0)
+		check(game.chains[rim.chain_id]==2 and game.defeated.size()==2 and game.score==3500,
+			'a terminal hit never gets scored twice or continues along a reflected path')
+		fixture()
+		rim=ball(Vector2(wall_x,492),0)
+		target=game.new_enemy(Vector2(wall_x-direction*8,492),1)
+		target.previous=Vector2(wall_x-direction*55,492)
+		game.kick_ball(rim,direction)
+		game.advance_snowballs([rim],[target],.05)
+		check(rim.dead and not target.dead, 'a monster arriving later in the frame misses the time-zero shatter')
 
 func run():
 	await process_frame
@@ -212,11 +274,13 @@ func run():
 	game.enemies=[victim,b,a]; game.kick_ball(a,1); a.v.x=3000; game.step_game(.05)
 	check(a.p.x<300 and b.p.x>430 and victim.dead and game.defeated.size()==1, 'rebound and transmitted roll resolve in order, even with reversed enemy storage')
 	check(a.chain_id==b.chain_id and game.chains[a.chain_id]==1 and game.score==2000, 'the transmitted hit is scored once on the original chain')
-	fixture(); a=ball(Vector2(870,492)); victim=game.new_enemy(Vector2(808,492),1)
-	game.enemies=[victim,a]; game.kick_ball(a,1); game.step_game(.12)
-	check(a.floor_bounces==1 and a.p.x<820 and not a.dead and victim.dead and game.defeated[0].v.x<0, 'floor wall returns the ball and can hit a target on the reflected leg')
-	a.p=Vector2(51,492); a.ground=true; game.move_ball(a,.01)
-	check(a.dead and a.floor_bounces==2, 'second floor-wall contact ends the run after one return sweep')
+	fixture(); a=ball(Vector2(840,492)); victim=game.new_enemy(Vector2(898,492),1)
+	var behind=game.new_enemy(Vector2(762,492),2)
+	game.enemies=[behind,victim,a]; game.kick_ball(a,1); game.step_game(.18)
+	check(a.dead and a.p.x==910 and victim.dead and not behind.dead and game.score==1500,
+		'the first bottom edge ends the roll after forward hits; no phantom return hit in the same frame')
+	test_roll_exits()
+	test_exit_contact_ties()
 	fixture(); a=ball(Vector2(500,492)); victim=game.new_enemy(Vector2(550,540),1)
 	victim.previous=Vector2(550,440); game.kick_ball(a,1); a.v.x=2000
 	game.advance_snowballs([a],[victim],.05)

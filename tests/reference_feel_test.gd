@@ -39,7 +39,7 @@ func run():
 	fixture();game.gifts=[{'p':game.player.p,'life':2.0,'kind':'red'}];game.step_game(.001);game.update_player(DT,1)
 	check(game.player.v.x/960.0>.27 and game.speed_up,'red bottle still boosts walking')
 	fixture();game.touch_fire=true
-	for i in 23:game.step_game(DT)
+	for i in range(ceili(game.SHOT_INTERVAL/DT)+2):game.step_game(DT)
 	check(game.shots.size()>=2 and game.next_shot>=2,'held fire keeps multiple independent snow effects in flight')
 	fixture();var enemy=game.new_enemy(Vector2(330,492),0);game.enemies=[enemy];game.touch_fire=true
 	for i in 60:game.step_game(DT)
