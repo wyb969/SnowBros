@@ -10,6 +10,9 @@ const LOGIC_WIDTH = 960.0
 const PLAYER_MOVE_SPEED = LOGIC_WIDTH*.22
 const PLAYER_RED_SPEED = PLAYER_MOVE_SPEED*1.3
 const SNOW_MAX = 6
+const PARTIAL_THAW_DELAY = 1.6
+const BALL_THAW_DELAY = 4.0
+const THAW_LAYER_TIME = .40
 const BALL_RADIUS = 24.0
 const BALL_ENEMY_REACH = 40.0
 const BALL_LEFT_WALL = 50.0
@@ -32,12 +35,13 @@ const SHOT_TAP_BUFFER = .045
 const SHOT_SPEED = LOGIC_WIDTH*1.125
 const SHOT_CRUISE_TIME = .02
 const SHOT_BRAKE_TIME = .33
-const SHOT_LONG_SPEED = LOGIC_WIDTH*1.875
+const LONG_REACH_SCALE = 1.15
+const SHOT_LONG_SPEED = LOGIC_WIDTH*1.875*LONG_REACH_SCALE
 const SHOT_LONG_CRUISE_TIME = 8.0/60.0
 const SHOT_LONG_BRAKE_TIME = 10.0/60.0
 # The hand is 24 logic pixels above the platform; allow for the enlarged
 # crescent's lower rim when adapting the seven-pixel drop to this character.
-const LONG_SHOT_SCALE = Vector2(LOGIC_WIDTH/256.0,1.70)
+const LONG_SHOT_SCALE = Vector2(LOGIC_WIDTH/256.0*LONG_REACH_SCALE,1.70)
 const LONG_FIRST_CENTER = 9.5
 const LONG_TRACE = [
 	Vector2(0,0),Vector2(8,-1),Vector2(16,-3),Vector2(24,-4),Vector2(32,-4),Vector2(40,-4),
@@ -183,7 +187,7 @@ func sync_web_state(dt):
 	web_shell.update(JSON.stringify({"state":state,"paused":paused,"practice":practice,"case":practice_case,"score":score,"lives":lives}))
 
 func new_enemy(pos, id, snow=0):
-	return {"id":id,"p":pos,"v":Vector2.ZERO,"dir":1 if id%2==0 else -1,"ground":true,"snow":snow,"roll":false,"thaw":12.0,"jump":2.0+id*0.4,"chain":0,"spin":0.0,"impact":0.0,"flash":0.0,"bounces":0,"stack_tone":0,"travel":[],"credited":false,"dead":false,"chain_id":0,"previous":pos}
+	return {"id":id,"p":pos,"v":Vector2.ZERO,"dir":1 if id%2==0 else -1,"ground":true,"waiting":practice and snow==0,"snow":snow,"roll":false,"thaw":BALL_THAW_DELAY,"jump":2.0+id*0.4,"chain":0,"spin":0.0,"impact":0.0,"flash":0.0,"bounces":0,"stack_tone":0,"travel":[],"credited":false,"dead":false,"chain_id":0,"previous":pos}
 
 func reset(training=false, case_index=-1):
 	if case_index>=0: practice_case=case_index%4
@@ -212,9 +216,7 @@ func reset(training=false, case_index=-1):
 				gifts.append({"p":Vector2(365,172),"life":999.0,"kind":"red"})
 			3:
 				player.p=Vector2(220,492)
-				var range_target = new_enemy(Vector2(510,492),0,1)
-				range_target.thaw = INF
-				enemies.append(range_target)
+				enemies.append(new_enemy(Vector2(610,492),0))
 				enemies.append(new_enemy(Vector2(600,388),1,2))
 				gifts.append({"p":Vector2(286,492),"life":999.0,"kind":"blue"})
 				gifts.append({"p":Vector2(154,492),"life":999.0,"kind":"yellow"})
@@ -296,7 +298,7 @@ func credit_ball(e):
 func kick_ball(e, direction, chain_id=0):
 	var vertical: float=e.v.y if not e.ground else 0.0
 	e.roll=true; e.stack_tone=0; e.dir=direction; e.v=Vector2(direction*ROLL_SPEED,vertical)
-	e.impact=0.65; e.impact_side=false; e.thaw=12; credit_ball(e)
+	e.impact=0.65; e.impact_side=false; e.thaw=BALL_THAW_DELAY; credit_ball(e)
 	if chain_id==0:
 		e.chain_id=next_chain; chains[next_chain]=0; next_chain+=1
 	else: e.chain_id=chain_id
@@ -368,7 +370,7 @@ func push_ball_group(seed, push_distance):
 		if old_x * direction > proposed + .01: break
 		ball.p.x = maxf(old_x * direction, proposed) * direction
 		ball.spin += (ball.p.x-old_x) / BALL_RADIUS
-		ball.thaw = 12.0
+		ball.thaw = BALL_THAW_DELAY
 		proposed = ball.p.x * direction + STACK_DISTANCE
 	if direction < 0.0: row.reverse()
 	tint_ball_row(row)
@@ -654,7 +656,10 @@ func snow_hit(e,shot):
 	burst(impact,ICE,4)
 	if e.snow>=SNOW_MAX: return
 	score+=10; high_score=maxi(high_score,score)
-	e.snow=mini(SNOW_MAX,e.snow+shot.power); e.thaw=12.0
+	var layers: int = shot.power + int(shot.get("extended",false))
+	e.waiting = false
+	e.snow = mini(SNOW_MAX, e.snow + layers)
+	e.thaw = BALL_THAW_DELAY if e.snow==SNOW_MAX else PARTIAL_THAW_DELAY
 	# Ordinary snow arrests walking. It never launches a living target.
 	# A target already airborne still follows gravity, without added impulse.
 	e.v.x=0.0
@@ -848,7 +853,7 @@ func update_player(dt,axis):
 			continue
 		if player.v.y<0 and previous.y-46>=e.p.y-3 and player.p.y-46<=e.p.y+2 and side_distance<33:
 			# Head contact: bump without activating a fast roll.
-			e.v.y=minf(e.v.y,-245.0); e.ground=false; e.thaw=12; e.impact=.5
+			e.v.y=minf(e.v.y,-245.0); e.ground=false; e.thaw=BALL_THAW_DELAY; e.impact=.5
 			player.p.y=e.p.y+47; player.v.y=40; ball_impact(e,.4)
 			continue
 		if player.p.y<=top+4 or player.p.y-44>=e.p.y-2: continue
@@ -957,7 +962,7 @@ func shot_path(shot, age, flutter=true):
 		var t := clampf(falling/SHOT_DRIFT_TIME, 0, 1)
 		var final_dx := 3.0
 		var entry_dx: float = SHOT_SPEED*.18
-		distance += SHOT_DRIFT_TIME*(final_dx*t + (entry_dx-final_dx)*(1.0-pow(1.0-t,3))/3.0)
+		distance += SHOT_DRIFT_TIME*(final_dx*t + (entry_dx-final_dx)*(1.0-pow(1.0-t,12))/12.0)
 		var entry_dy: float = (SHOT_SINK/brake)*(1.0-exp(-1.0/.12))/(1.0-.12*(1.0-exp(-1.0/.12)))
 		var final_dy: float = 2.0*SHOT_DRIFT_DROP/SHOT_DRIFT_TIME-entry_dy
 		y += falling*lerpf(entry_dy, final_dy, t*.5)
@@ -1085,18 +1090,19 @@ func step_game(dt):
 	for e in enemies:
 		e.flash = maxf(0.0, e.flash - dt)
 		e.previous = e.p
-		if e.snow > 0 and not e.roll and (e.snow < SNOW_MAX or not practice):
+		if e.snow > 0 and not e.roll:
 			e.thaw -= dt
 			if e.thaw <= 0.0:
 				e.snow -= 1
-				e.thaw = 1.3
+				e.thaw += THAW_LAYER_TIME
 		if e.snow >= SNOW_MAX:
 			balls.append(e)
 			continue
 		targets.append(e)
-		e.v.x = e.dir * (48 + minf(elapsed / 8, 30)) if e.snow == 0 and not practice else 0.0
-		e.jump -= dt
-		if not practice and e.jump <= 0.0 and e.ground and e.snow == 0:
+		var active: bool = e.snow == 0 and not (practice and e.waiting)
+		e.v.x = e.dir * (48 + minf(elapsed / 8, 30)) if active else 0.0
+		if active: e.jump -= dt
+		if active and e.jump <= 0.0 and e.ground:
 			e.jump = 2.7 + e.id * .1
 			e.v.y = -room_launch_speed(e.p.y, ENEMY_CEILING, 1000.0, 470.0)
 			e.dir = 1 if player.p.x > e.p.x else -1
@@ -1135,7 +1141,7 @@ func step_game(dt):
 			match g.kind:
 				"red": speed_up=true; announce("SPEED UP"); play_sfx("pickup")
 				"blue": power_up=true; announce("BIG SNOW / POWER UP"); play_sfx("pickup")
-				"yellow": range_up=true; announce("LONG SNOW / RANGE UP"); play_sfx("pickup")
+				"yellow": range_up=true; announce("LONG SNOW / POWER UP"); play_sfx("pickup")
 				_: award(400,g.p-Vector2(0,25))
 			burst(g.p-Vector2(0,14),Color("ffdb79"),8)
 	gifts=gifts.filter(func(g): return g.life>0)
@@ -1179,6 +1185,9 @@ func draw_snow_shot(shot):
 	var tilt := shot_tilt(shot,shot.age)
 	var pos: Vector2 = shot.p.round()
 	var face := Vector2(shot.dir*size.x,size.y)
+	if shot.extended and shot.age<shot.cruise:
+		var tail: Vector2 = shot_path(shot,maxf(0.0,shot.age-.018))
+		draw_line(tail.round(),pos,Color("8bdaed"),3)
 	# Loose grains trail the broad face during launch and hang above it in descent.
 	var lag := Vector2(-shot.dir*(size.x+4.0)*(1.0-drift*.6),-brake*(size.y+4))
 	draw_rect(Rect2(pos+lag,Vector2(3,2)), Color("93d9ed"))
@@ -1306,6 +1315,10 @@ func _draw():
 		# A repeatable firing line for comparing both shots from the same spot.
 		draw_rect(Rect2(209,494,22,3),WHITE)
 		draw_rect(Rect2(218,497,4,5),WHITE)
+		# On this flat floor the centers of spent shots land near these ticks.
+		for mark in [[411,"1x",ICE],[605,"2x",Color("ffc56c")]]:
+			draw_rect(Rect2(mark[0]-1,494,3,6),mark[2])
+			label_at(mark[1],Vector2(mark[0]-8,512),8,mark[2])
 	for g in gifts:
 		if g.life<2 and int(clock*8)%2==0: continue
 		var colors={"red":Color("ef7287"),"blue":Color("6cb9ff"),"yellow":Color("ffd26f"),"points":Color("ffcd70")}

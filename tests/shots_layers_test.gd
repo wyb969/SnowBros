@@ -41,7 +41,7 @@ func run():
 	fixture();pickup('yellow');shot=fire()
 	var yellow_size: Vector2=game.shot_extent(shot)
 	check(yellow_size.x>normal_size.x*2 and is_equal_approx(yellow_size.y,normal_size.y),'yellow bottle visibly lengthens snow without making it blue-sized')
-	check(game.shot_path(shot,shot.duration).x-shot.origin.x>normal_reach*1.4 and shot.power==1,'yellow also extends range without changing snow power')
+	check(game.shot_path(shot,shot.duration).x-shot.origin.x>normal_reach*1.85,'yellow carries nearly twice as far over open space')
 	fixture();pickup('blue');pickup('yellow');shot=fire()
 	var combined_size: Vector2=game.shot_extent(shot)
 	check(combined_size.x>blue_size.x*2 and is_equal_approx(combined_size.y,blue_size.y),'blue and yellow upgrades combine size and length')
@@ -54,7 +54,24 @@ func run():
 	fixture();target=game.new_enemy(Vector2(180,492),0);game.enemies=[target];fire();game.update_shots(.001)
 	check(target.snow==0,'normal flake does not hit ahead of its visible body')
 	fixture();pickup('yellow');target=game.new_enemy(Vector2(180,492),0);game.enemies=[target];fire();game.update_shots(.001)
-	check(target.snow==1,'yellow length increases the real horizontal hit area')
+	check(target.snow==2,'yellow length increases the real horizontal hit area')
+	for boosts in [[],['blue'],['yellow'],['blue','yellow']]:
+		fixture()
+		for kind in boosts: pickup(kind)
+		target=game.new_enemy(Vector2(260,492),2)
+		game.enemies=[target]
+		var hits:=0
+		while target.snow<game.SNOW_MAX and hits<6:
+			fire();game.update_shots(1.0);hits+=1
+		check(hits==[6,3,2][boosts.size()] and target.snow==game.SNOW_MAX,'real shots freeze with '+str(boosts))
+	for training in [false,true]:
+		fixture();game.practice=training
+		target=game.new_enemy(Vector2(340,492),1,game.SNOW_MAX)
+		game.enemies=[target]
+		for i in 696: game.step_game(DT)
+		check(target.snow>0 and is_equal_approx(target.p.x,340.0),'enemy holds still through its final snow layer')
+		for i in 60: game.step_game(DT)
+		check(target.snow==0 and target.p.x<339.99,'fully thawed enemy walks again in training='+str(training))
 	fixture();var near_target=game.new_enemy(Vector2(165,492),0);var far_target=game.new_enemy(Vector2(170,492),1)
 	game.enemies=[far_target,near_target];fire();game.update_shots(.001)
 	check(near_target.snow==1 and far_target.snow==0,'snow hits the nearest target first regardless of enemy list order')

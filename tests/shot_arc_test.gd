@@ -107,8 +107,11 @@ func test_volley_and_range():
 			check(on_floor>0 and end.x>=on_floor and target_gap>on_floor,'floor contact, open-air fall and target-center range measured independently')
 			if not blue and not yellow:
 				check(on_floor>=160 and on_floor<=180,'ordinary standing flake reaches the original first-floor muzzle-to-contact range band')
+			if yellow:
+				var base_gap := maximum_ground_spacing(blue,false)
+				check(target_gap>=base_gap*1.90 and target_gap<=base_gap*2.15,'yellow doubles same-floor enemy reach with either flake size')
 			if blue and yellow:
-				check(on_floor>=306 and on_floor<=318 and absf(ground_time-.30)<.035,'blue plus yellow on a platform reaches the recorded glove-to-last-center band in about 18 video frames')
+				check(on_floor>=355 and on_floor<=370 and absf(ground_time-.30)<.035,'combined shot keeps its fast contact time at the extended reach')
 
 func run():
 	await process_frame
@@ -128,7 +131,7 @@ func run():
 		var early:Vector2=game.shot_path(s,1.0/30)
 		check(game.shot_path(s,0)==s.origin,label+': snow starts at the muzzle without a position jump')
 		if extended:
-			check((early.x-100)*30.0/960.0>1.85 and (early.x-100)*30.0/960.0<2.08,'fast long shot retains the earlier 1.85–2.08 width/s initial-speed sample')
+			check((early.x-100)*30.0/960.0>2.20 and (early.x-100)*30.0/960.0<2.45,'yellow launch has a visibly faster forward sweep')
 		else:
 			var observed=[11.5,9.5,8.5,4.5,4.5,5.0,4.0,2.5]
 			var first:Vector2=game.shot_path(s,1.0/60)
@@ -155,9 +158,9 @@ func run():
 			var expected=[8,8,8,8,8,8,8,3,3,3,3,2,1,2,1,1,0]
 			for i in expected.size():
 				var after:Vector2=game.shot_path(s,(i+2)/60.0,false)
-				if absf((after.x-before.x)/3.75-expected[i])>.08: sampled=false
+				if absf((after.x-before.x)/game.LONG_SHOT_SCALE.x-expected[i])>.08: sampled=false
 				before=after
-			check(sampled and absf((before.x-first.x)/3.75-75)<.1,'yellow trace follows the 8 px cruise, repeated 3 px braking and 75 px total over tutorial frames 1936–1953')
+			check(sampled and absf((before.x-first.x)/game.LONG_SHOT_SCALE.x-75)<.1,'yellow trace follows the 8 px cruise, repeated 3 px braking and 75 px total over tutorial frames 1936–1953')
 			check(game.shot_path(s,5.0/60).y<first.y-5 and before.y>first.y+10,'long flake rises above the glove before settling below its release height')
 			var end:Vector2=game.shot_path(s,s.duration)
 			check(end.x-before.x<3.0 and end.y-before.y>100,'after the last visible sample the airborne flake falls one tier with less than three more pixels of reach')
@@ -175,7 +178,7 @@ func run():
 		var ground_target=game.new_enemy(Vector2(end.x-10,combat.origin.y+24),0)
 		game.enemies=[ground_target];game.shots=[combat]
 		for i in int(ceil(combat.duration*120.0))+1:game.update_shots(1.0/120)
-		check(ground_target.snow==1,label+': slowing snow can still hit a same-floor enemy near the end of its braking phase')
+		check(ground_target.snow==(2 if extended else 1),label+': slowing snow can still hit a same-floor enemy near the end of its braking phase')
 	var bounded=true;var early_clean=true;var continuous=true;var both_signs=false
 	for phase_index in 12:
 		var s=shot(false,1,1,phase_index*.6)
@@ -204,7 +207,7 @@ func run():
 	check(game.shot_path(blue,.2)==game.shot_path(right,.2),'blue size does not change the trajectory center')
 	var pre_yellow_travel:float=(game.shot_path(blue,19.0/60).x-game.shot_path(blue,1.0/60).x)/3.75
 	var post_yellow_travel:float=(game.shot_path(long_shot,18.0/60).x-game.shot_path(long_shot,1.0/60).x)/3.75
-	check(absf(pre_yellow_travel-43.0)<1.1 and absf(post_yellow_travel-75.0)<.1,'blue and blue-plus-yellow free-flight centers span the recorded 43 and 75 native pixels over their respective capture windows')
+	check(absf(pre_yellow_travel-43.0)<1.1 and absf(post_yellow_travel-86.25)<.1,'blue and blue-plus-yellow free-flight centers span 43 and 86 native pixels over their respective capture windows')
 	var a=shot();var b=a.duplicate(true);game.enemies.clear();game.shots=[a]
 	for i in 8:game.update_shots(1.0/30)
 	game.shots=[b]
